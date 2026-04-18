@@ -33,3 +33,9 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "unit: unit tests",
+    "smoke: smoke tests",
+    "integration: integration tests",
+    "e2e: end-to-end tests",
+]

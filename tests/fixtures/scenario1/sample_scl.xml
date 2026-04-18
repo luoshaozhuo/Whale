@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL" version="2007" revision="B">
+
+  <!-- ========================= -->
+  <!-- Substation -->
+  <!-- ========================= -->
+  <Substation name="WindFarm_01">
+    <VoltageLevel name="VL_35kV" nomFreq="50">
+      <Bay name="Bay_WTG_01"/>
+    </VoltageLevel>
+  </Substation>
+
+  <!-- ========================= -->
+  <!-- Communication (简化 MMS) -->
+  <!-- ========================= -->
+  <Communication>
+    <SubNetwork name="ProcessBus" type="8-MMS">
+      <ConnectedAP iedName="WTG_01" apName="AP1">
+        <Address>
+          <P type="IP">192.168.1.101</P>
+          <P type="PORT">102</P>
+        </Address>
+      </ConnectedAP>
+    </SubNetwork>
+  </Communication>
+
+  <!-- ========================= -->
+  <!-- IED 定义（风机） -->
+  <!-- ========================= -->
+  <IED name="WTG_01">
+    <AccessPoint name="AP1">
+      <Server>
+        <LDevice inst="LD0">
+
+          <!-- 有功功率 -->
+          <LN lnClass="MMXU" inst="1" lnType="MMXU_type">
+            <DO name="TotW">
+              <DA name="mag" fc="MX"/>
+            </DO>
+          </LN>
+
+          <!-- 风速 -->
+          <LN lnClass="WIND" inst="1" lnType="WIND_type">
+            <DO name="WS">
+              <DA name="mag" fc="MX"/>
+            </DO>
+          </LN>
+
+          <!-- 转速 -->
+          <LN lnClass="MMTR" inst="1" lnType="MMTR_type">
+            <DO name="RotSpd">
+              <DA name="mag" fc="MX"/>
+            </DO>
+          </LN>
+
+          <!-- 桨距角 -->
+          <LN lnClass="WROT" inst="1" lnType="WROT_type">
+            <DO name="PitchAng">
+              <DA name="mag" fc="MX"/>
+            </DO>
+          </LN>
+
+          <!-- 温度 -->
+          <LN lnClass="TMP" inst="1" lnType="TMP_type">
+            <DO name="Tmp">
+              <DA name="mag" fc="MX"/>
+            </DO>
+          </LN>
+
+          <!-- 运行状态 -->
+          <LN lnClass="STMP" inst="1" lnType="STMP_type">
+            <DO name="OpSt">
+              <DA name="stVal" fc="ST"/>
+            </DO>
+          </LN>
+
+        </LDevice>
+      </Server>
+    </AccessPoint>
+  </IED>
+
+  <!-- ========================= -->
+  <!-- 数据类型模板 -->
+  <!-- ========================= -->
+  <DataTypeTemplates>
+
+    <!-- 有功功率 -->
+    <LNodeType id="MMXU_type" lnClass="MMXU">
+      <DO name="TotW" type="DO_Float"/>
+    </LNodeType>
+
+    <!-- 风速 -->
+    <LNodeType id="WIND_type" lnClass="WIND">
+      <DO name="WS" type="DO_Float"/>
+    </LNodeType>
+
+    <!-- 转速 -->
+    <LNodeType id="MMTR_type" lnClass="MMTR">
+      <DO name="RotSpd" type="DO_Float"/>
+    </LNodeType>
+
+    <!-- 桨距角 -->
+    <LNodeType id="WROT_type" lnClass="WROT">
+      <DO name="PitchAng" type="DO_Float"/>
+    </LNodeType>
+
+    <!-- 温度 -->
+    <LNodeType id="TMP_type" lnClass="TMP">
+      <DO name="Tmp" type="DO_Float"/>
+    </LNodeType>
+
+    <!-- 状态 -->
+    <LNodeType id="STMP_type" lnClass="STMP">
+      <DO name="OpSt" type="DO_State"/>
+    </LNodeType>
+
+    <!-- DO 类型 -->
+    <DOType id="DO_Float" cdc="MV">
+      <DA name="mag" bType="FLOAT32"/>
+    </DOType>
+
+    <DOType id="DO_State" cdc="SPC">
+      <DA name="stVal" bType="INT32"/>
+    </DOType>
+
+  </DataTypeTemplates>
+
+</SCL>
