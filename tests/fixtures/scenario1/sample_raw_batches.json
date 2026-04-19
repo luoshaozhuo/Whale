@@ -1,0 +1,32 @@
+[
+  {
+    "batch_id": "batch-001",
+    "recv_time": "2026-04-18T12:00:00Z",
+    "turbine_id": "T-100",
+    "event_time": "2026-04-18T12:00:00Z",
+    "measurements": [
+      {"node_id": "ns=2;s=power", "value": 1000.0, "status": "GOOD"},
+      {"node_id": "ns=2;s=wind", "value": 6.8, "status": "GOOD"},
+      {"node_id": "ns=2;s=rotor", "value": 14.2, "status": "GOOD"},
+      {"node_id": "ns=2;s=pitch", "value": 3.1, "status": "GOOD"},
+      {"node_id": "ns=2;s=temp", "value": 135.0, "status": "GOOD"},
+      {"node_id": "ns=2;s=state", "value": "STARTING", "status": "GOOD"},
+      {"node_id": "ns=2;s=fault", "value": "FAULT_000", "status": "GOOD"}
+    ]
+  },
+  {
+    "batch_id": "batch-002",
+    "recv_time": "2026-04-18T12:00:11Z",
+    "turbine_id": "T-100",
+    "event_time": "2026-04-18T12:00:11Z",
+    "measurements": [
+      {"node_id": "ns=2;s=power", "value": 1010.0, "status": "GOOD"},
+      {"node_id": "ns=2;s=wind", "value": 7.0, "status": "GOOD"},
+      {"node_id": "ns=2;s=rotor", "value": 14.5, "status": "GOOD"},
+      {"node_id": "ns=2;s=pitch", "value": 3.0, "status": "GOOD"},
+      {"node_id": "ns=2;s=temp", "value": 118.0, "status": "GOOD"},
+      {"node_id": "ns=2;s=state", "value": "RUNNING", "status": "GOOD"},
+      {"node_id": "ns=2;s=fault", "value": "FAULT_000", "status": "GOOD"}
+    ]
+  }
+]
