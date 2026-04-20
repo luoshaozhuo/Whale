@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from whale.scenario1.models import DwdRecord, DwsRealtimeAggregate
+from whale.models import DwdRecord, DwsRealtimeAggregate
 from whale.shared.enums.quality import QualityCode, RunState
 from whale.shared.utils.time import floor_to_second, window_start
 

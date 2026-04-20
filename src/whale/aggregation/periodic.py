@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 
-from whale.scenario1.models import DwdRecord, DwsPeriodicAggregate
+from whale.models import DwdRecord, DwsPeriodicAggregate
 from whale.shared.enums.quality import QualityCode
 from whale.shared.utils.time import floor_to_minute
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from whale.scenario1.models import NUMERIC_VALUE_TYPES, NormalizedPoint, PointMeta
+from whale.models import NUMERIC_VALUE_TYPES, NormalizedPoint, PointMeta
 from whale.shared.enums.quality import RunState
 from whale.shared.utils.time import parse_iso_datetime
 

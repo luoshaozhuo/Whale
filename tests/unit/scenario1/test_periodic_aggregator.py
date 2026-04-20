@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from whale.scenario1.models import DwdRecord
-from whale.scenario1.periodic_aggregator import aggregate_periodic
+from whale.aggregation.periodic import aggregate_periodic
+from whale.models import DwdRecord
 from whale.shared.enums.quality import QualityCode
 from whale.shared.utils.time import parse_iso_datetime
 

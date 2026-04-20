@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from whale.scenario1.models import (
+from whale.models import (
     AdsAvailability,
     AdsPowerCurveDeviation,
     DwsPeriodicAggregate,
     DwsRealtimeAggregate,
 )
-from whale.scenario1.repositories import AdsRepository, DwsRepository
 from whale.shared.enums.quality import RunState
 from whale.shared.utils.time import parse_iso_datetime
+from whale.ingest.adapter.repositories.repositories import AdsRepository, DwsRepository
 
 
 @pytest.mark.unit

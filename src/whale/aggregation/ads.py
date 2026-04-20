@@ -7,7 +7,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from whale.scenario1.models import (
+from whale.models import (
     AdsAvailability,
     AdsPowerCurveDeviation,
     DwdRecord,

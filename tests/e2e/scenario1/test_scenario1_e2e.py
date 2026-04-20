@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from whale.scenario1.pipeline import Scenario1Pipeline
+from whale.pipeline import Scenario1Pipeline
 
 
 @pytest.mark.e2e

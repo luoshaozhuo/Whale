@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 
-from whale.scenario1.models import CleanResult, NormalizedPoint, PointMeta
+from whale.models import CleanResult, NormalizedPoint, PointMeta
 from whale.shared.enums.quality import CleanAction, QualityCode, RunState
 
 

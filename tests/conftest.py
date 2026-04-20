@@ -19,8 +19,8 @@ if str(SRC_ROOT) not in sys.path:
 
 from tools.opcua_sim.fleet_runtime import OpcUaFleetRuntime  # noqa: E402
 from tools.opcua_sim.server_runtime import OpcUaServerRuntime, load_server_config  # noqa: E402
-from whale.scenario1.models import PointMeta  # noqa: E402
-from whale.scenario1.scl_registry import build_registry_maps, parse_scl_registry  # noqa: E402
+from whale.models import PointMeta  # noqa: E402
+from whale.scl_registry import build_registry_maps, parse_scl_registry  # noqa: E402
 
 
 @pytest.fixture()

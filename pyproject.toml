@@ -9,7 +9,12 @@ description = "能源数据统一平台"
 authors = [{ name = "Team Whale" }]
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["asyncua>=1.1.8,<2.0.0", "PyYAML>=6.0,<7.0"]
+dependencies = [
+    "asyncua>=1.1.8,<2.0.0",
+    "psycopg[binary]>=3.2,<4.0",
+    "PyYAML>=6.0,<7.0",
+    "SQLAlchemy>=2.0,<3.0",
+]
 
 [tool.black]
 line-length = 100

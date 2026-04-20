@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from whale.scenario1.models import DwdRecord
-from whale.scenario1.realtime_aggregator import aggregate_realtime
+from whale.aggregation.realtime import aggregate_realtime
+from whale.models import DwdRecord
 from whale.shared.enums.quality import QualityCode, RunState
 from whale.shared.utils.time import parse_iso_datetime
 

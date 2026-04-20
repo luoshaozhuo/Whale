@@ -1,11 +1,11 @@
-"""SCL registry parsing for scenario1 minimal subset."""
+"""SCL registry parsing helpers."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from xml.etree import ElementTree
 
-from whale.scenario1.models import SUPPORTED_POINT_CODES, PointMeta
+from whale.models import SUPPORTED_POINT_CODES, PointMeta
 
 REQUIRED_SCL_FIELDS = {
     "turbine_id",
@@ -15,25 +15,13 @@ REQUIRED_SCL_FIELDS = {
     "unit",
 }
 
-OPTIONAL_FLOAT_FIELDS = {"min_value", "max_value", "deadband", "max_rate_of_change"}
-
 
 class SclRegistryError(ValueError):
     """Raised when the minimal SCL subset is invalid."""
 
 
 def parse_scl_registry(path: str | Path) -> list[PointMeta]:
-    """Parse a minimal SCL XML file into point metadata.
-
-    Args:
-        path: SCL XML path.
-
-    Returns:
-        Parsed point metadata list.
-
-    Raises:
-        SclRegistryError: If required fields are missing or XML is invalid.
-    """
+    """Parse a minimal SCL XML file into point metadata."""
     xml_path = Path(path)
     root = ElementTree.parse(xml_path).getroot()
     points = root.findall(".//point")
@@ -72,14 +60,7 @@ def parse_scl_registry(path: str | Path) -> list[PointMeta]:
 def build_registry_maps(
     registry: list[PointMeta],
 ) -> tuple[dict[str, PointMeta], dict[str, PointMeta]]:
-    """Build registry lookup maps for normalization and cleaning.
-
-    Args:
-        registry: Parsed point metadata list.
-
-    Returns:
-        A pair of lookup tables keyed by OPC UA node id and internal point code.
-    """
+    """Build registry lookup maps for normalization and cleaning."""
     by_node = {item.opcua_node_id: item for item in registry}
     by_code = {item.point_code: item for item in registry}
     return by_node, by_code

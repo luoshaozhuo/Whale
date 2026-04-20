@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from whale.scenario1.scl_registry import SclRegistryError, parse_scl_registry
+from whale.scl_registry import SclRegistryError, parse_scl_registry
 
 
 @pytest.mark.unit

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from whale.scenario1.collector import build_raw_batch
-from whale.scenario1.models import PointMeta
-from whale.scenario1.normalizer import NormalizationError, normalize_batch
+from whale.models import PointMeta
+from whale.processing.normalizer import NormalizationError, normalize_batch
+from whale.raw_batch import build_raw_batch
 from whale.shared.enums.quality import RunState
 
 

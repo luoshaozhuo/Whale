@@ -39,7 +39,7 @@ git commit -m "重构 fleet_runtime 模块"
 ## 3. Gitmoji（趣味性）
 
 使用 emoji 作为前缀，直观易读：
-✨ feat(opcua): 实现仿真器
+✨ feat: 实现仿真器
 🐛 fix: 修复连接超时问题
 📝 docs: 更新 API 文档
 ✅ test: 添加单元测试

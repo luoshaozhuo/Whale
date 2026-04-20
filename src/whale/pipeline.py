@@ -6,19 +6,19 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from whale.scenario1.ads_aggregator import (
+from whale.aggregation.ads import (
     aggregate_availability,
     aggregate_power_curve_deviation,
     load_power_curve,
 )
-from whale.scenario1.cleaner import PointCleaner
-from whale.scenario1.collector import build_raw_batch
-from whale.scenario1.models import PipelineRunResult
-from whale.scenario1.normalizer import normalize_batch
-from whale.scenario1.periodic_aggregator import aggregate_periodic
-from whale.scenario1.realtime_aggregator import aggregate_realtime
-from whale.scenario1.repositories import AdsRepository, DwdRepository, DwsRepository, OdsRepository
-from whale.scenario1.scl_registry import build_registry_maps, parse_scl_registry
+from whale.aggregation.periodic import aggregate_periodic
+from whale.aggregation.realtime import aggregate_realtime
+from whale.models import PipelineRunResult
+from whale.processing.cleaner import PointCleaner
+from whale.processing.normalizer import normalize_batch
+from whale.raw_batch import build_raw_batch
+from whale.scl_registry import build_registry_maps, parse_scl_registry
+from whale.ingest.adapter.repositories.repositories import AdsRepository, DwdRepository, DwsRepository, OdsRepository
 
 
 class Scenario1Pipeline:

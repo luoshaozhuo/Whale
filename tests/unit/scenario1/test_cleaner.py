@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from whale.scenario1.cleaner import PointCleaner
-from whale.scenario1.models import NormalizedPoint, PointMeta, ScalarValue
+from whale.models import NormalizedPoint, PointMeta, ScalarValue
+from whale.processing.cleaner import PointCleaner
 from whale.shared.enums.quality import CleanAction, QualityCode
 from whale.shared.utils.time import parse_iso_datetime
 

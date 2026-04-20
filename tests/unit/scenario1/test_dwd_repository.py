@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from whale.scenario1.cleaner import PointCleaner
-from whale.scenario1.collector import build_raw_batch
-from whale.scenario1.models import PointMeta
-from whale.scenario1.normalizer import normalize_batch
-from whale.scenario1.repositories import DwdRepository
+from whale.models import PointMeta
+from whale.processing.cleaner import PointCleaner
+from whale.processing.normalizer import normalize_batch
+from whale.raw_batch import build_raw_batch
+from whale.ingest.adapter.repositories.repositories import DwdRepository
 
 
 @pytest.mark.unit
