@@ -42,7 +42,7 @@ def _load_connection_samples(session: Session, connection_config_path: Path) -> 
     raw_config = yaml.safe_load(connection_config_path.read_text(encoding="utf-8")) or {}
     connections = raw_config.get("connections", [])
 
-    for item in connections:
+    for index, item in enumerate(connections):
         source_id = str(item["name"])
         update_interval_ms = int(item["update_interval_ms"])
 
@@ -60,7 +60,7 @@ def _load_connection_samples(session: Session, connection_config_path: Path) -> 
             SourceRuntimeConfigORM(
                 source_id=source_id,
                 protocol="opcua",
-                acquisition_mode="POLLING",
+                acquisition_mode="POLLING" if index == 0 else "ONCE",
                 interval_ms=update_interval_ms,
                 enabled=True,
             )

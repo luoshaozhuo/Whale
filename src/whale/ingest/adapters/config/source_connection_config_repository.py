@@ -1,4 +1,4 @@
-"""Database-backed source configuration adapter for ingest."""
+"""Database-backed source connection configuration repository for ingest."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from whale.ingest.ports.source.source_config_port import SourceConfigPort
 from whale.ingest.usecases.dtos.source_config_data import SourceConfigData
 
 
-class DbSourceConfigAdapter(SourceConfigPort):
-    """Load source configuration from the ingest background database."""
+class SourceConnectionConfigRepository(SourceConfigPort):
+    """Load source connection configuration from the ingest background database."""
 
     def get_source_config(self, source_id: str) -> SourceConfigData | None:
         """Return source configuration for one source identifier."""

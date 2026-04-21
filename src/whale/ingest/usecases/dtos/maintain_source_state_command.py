@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from whale.ingest.usecases.dtos.source_execution_plan import SourceExecutionPlan
+
 
 @dataclass(slots=True)
 class MaintainSourceStateCommand:
     """Input command for one source-state maintenance step."""
 
-    source_id: str
+    execution_plan: SourceExecutionPlan

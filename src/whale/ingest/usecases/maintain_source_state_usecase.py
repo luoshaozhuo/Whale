@@ -11,7 +11,6 @@ business boundary of this use case.
 from __future__ import annotations
 
 from whale.ingest.ports.source.source_acquisition_port import SourceAcquisitionPort
-from whale.ingest.ports.source.source_config_port import SourceConfigPort
 from whale.ingest.ports.store.source_state_repository_port import (
     SourceStateRepositoryPort,
 )
@@ -31,18 +30,15 @@ class MaintainSourceStateUseCase:
 
     def __init__(
         self,
-        source_config_port: SourceConfigPort,
         acquisition_port: SourceAcquisitionPort,
         store_port: SourceStateRepositoryPort,
     ) -> None:
-        """Initialize the use case with source-side and persistence ports.
+        """Initialize the use case with acquisition and persistence ports.
 
         Args:
-            source_config_port: Port used to load one source configuration.
             acquisition_port: Port used to fetch source states from one source.
             store_port: Port used to persist the fetched states as source state.
         """
-        self._source_config_port = source_config_port
         self._acquisition_port = acquisition_port
         self._store_port = store_port
 
@@ -58,18 +54,31 @@ class MaintainSourceStateUseCase:
         Returns:
             Minimal execution statistics for this step.
         """
-        data = SourceStateData(source_id=command.source_id)
-        acquisition_role = AcquisitionRole(
-            data,
-            self._source_config_port,
-            self._acquisition_port,
-        )
+        data = self._build_source_state_data(command)
+        acquisition_role = AcquisitionRole(data, self._acquisition_port)
         update_role = StateUpdateRole(data, self._store_port)
-        acquisition_role.load_config()
         acquisition_role.acquire()
         update_role.apply()
         return MaintainSourceStateResult(
             source_id=data.source_id,
             received_count=data.received_count,
             updated_count=data.updated_count,
+        )
+
+    def _build_source_state_data(
+        self,
+        command: MaintainSourceStateCommand,
+    ) -> SourceStateData:
+        """Build one source-state data object from an execution plan."""
+        plan = command.execution_plan
+        return SourceStateData(
+            source_id=plan.connection.source_id,
+            source_name=plan.connection.source_name,
+            protocol=plan.connection.protocol,
+            endpoint=plan.connection.endpoint,
+            security_policy=plan.connection.security_policy,
+            security_mode=plan.connection.security_mode,
+            update_interval_ms=plan.connection.update_interval_ms,
+            enabled=plan.connection.enabled and plan.schedule.enabled,
+            acquisition_status="READY",
         )

@@ -68,3 +68,7 @@ def session_scope() -> Generator[Session, None, None]:
         yield session
     finally:
         session.close()
+
+def dispose_engine() -> None:
+    """Dispose SQLAlchemy engine and close pooled connections."""
+    engine.dispose()

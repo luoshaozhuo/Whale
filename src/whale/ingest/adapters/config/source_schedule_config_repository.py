@@ -1,4 +1,4 @@
-"""Database-backed runtime configuration adapter for ingest."""
+"""Database-backed source schedule configuration repository for ingest."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from whale.ingest.usecases.dtos.source_runtime_config_data import (
 )
 
 
-class DbSourceRuntimeConfigAdapter(SourceRuntimeConfigPort):
-    """Load enabled runtime configuration from the ingest database."""
+class SourceScheduleConfigRepository(SourceRuntimeConfigPort):
+    """Load enabled source schedule configuration from the ingest database."""
 
     def get_enabled_sources(self) -> list[SourceRuntimeConfigData]:
         """Return enabled source runtime configurations."""

@@ -278,3 +278,134 @@ whale/ingest/
 - 将数据发送到消息管道
 
 当前数据库模块承担的是配置初始化与配置读取支撑能力，不是通用业务数据库层。
+
+# 杂
+
+ORM对象要写“comment=”，特比对于名义变量要加入CheckConstraint，以及对每个选项进行说明
+
+当前已经落到 ORM 约束中的名义变量，可取值说明如下：
+
+- `source_runtime_config.protocol`
+  当前只允许：`opcua`
+- `source_runtime_config.acquisition_mode`
+  允许值：
+  `ONCE`：执行一次后不再重复调度
+  `POLLING`：按 `interval_ms` 周期触发一次性读取
+  `SUBSCRIPTION`：进入订阅模式的启动分支，后续由订阅实现接管
+- `opcua_client_connections.security_policy`
+  允许值：
+  `None`：不启用安全策略
+  `Basic128Rsa15`：旧版 RSA15 策略
+  `Basic256`：旧版 Basic256 策略
+  `Basic256Sha256`：更常见的 SHA256 策略
+  `Aes128_Sha256_RsaOaep`：较新的 AES128 + SHA256 + RSA-OAEP 策略
+  `Aes256_Sha256_RsaPss`：较新的 AES256 + SHA256 + RSA-PSS 策略
+- `opcua_client_connections.security_mode`
+  允许值：
+  `None`：不签名、不加密
+  `Sign`：只签名，不加密
+  `SignAndEncrypt`：同时签名并加密
+
+## 增补：调度、执行计划与并行运行
+
+这一节记录 ingest 从“单次执行链路”继续演进到“可调度、可并行、多模式采集”时的优化结论。
+
+### 当前主要问题
+
+- 调度层如果只拿 `source_id`，下游还要再次回查配置，链路重复读取配置，职责边界不清。
+- scheduler 如果同时负责读配置、拼装计划、判断 mode、直接执行采集，会膨胀成混合调度器。
+- `ONCE`、`POLLING`、`SUBSCRIPTION` 的生命周期不同，不适合都塞进同一个串行主循环里硬编码处理。
+- 采集场景本质以网络 I/O 为主，若按“一设备一线程”扩张到上百设备，线程数会失控。
+
+### 优化结论
+
+后续 ingest 运行链路按下面的职责划分推进：
+
+1. 先准备执行计划，再调度执行，不再让执行链路二次读配置。
+2. scheduler 只负责分发与生命周期控制，不负责配置拼装和采集细节。
+3. use case 只负责“一次执行闭环”，不负责 mode 判断，不负责调度循环。
+4. role 只保留动作职责：
+   - `AcquisitionRole` 负责采集
+   - `StateUpdateRole` 负责状态落库
+5. 并行运行优先按“有限执行单元”设计，不走“一设备一线程”。
+
+### 推荐分层
+
+推荐主链路如下：
+
+```text
+PrepareSourceExecutionPlanUseCase
+-> list[SourceExecutionPlan]
+
+SourceScheduler
+-> choose runner by acquisition_mode
+-> runner.start(plan)
+
+Runner
+-> MaintainSourceStateUseCase.execute(plan)
+
+UseCase
+-> AcquisitionRole
+-> StateUpdateRole
+```
+
+各层职责定义如下：
+
+- `PrepareSourceExecutionPlanUseCase`
+  负责读取配置、聚合运行时调度配置与连接配置、生成完整执行计划。
+- `SourceScheduler`
+  负责获取计划、按 `ONCE / POLLING / SUBSCRIPTION` 分发、维护最小调度状态。
+- `Runner`
+  负责某一种 mode 的执行生命周期。
+- `MaintainSourceStateUseCase`
+  负责单个 source 的一次采集与落库闭环。
+- `Role`
+  负责具体动作，不负责调度，不负责配置读取。
+
+### 执行计划建模原则
+
+执行计划不应只包含 `source_id`。至少应显式区分两类静态信息：
+
+- `SourceScheduleSpec`
+  包含 `acquisition_mode`、`interval_ms` 等调度信息。
+- `SourceConnectionSpec`
+  包含 `protocol`、`endpoint`、`security_policy`、`security_mode` 等采集连接信息。
+
+必要时再组合为 `SourceExecutionPlan`，供 scheduler 和执行 use case 消费。
+
+这样做的目标是：
+
+- 配置只读一次
+- 调度输入完整
+- 执行链路不再二次查配置
+- 后续扩展不同协议或不同点位选择时，不必把细节塞回 scheduler
+
+### 并行运行决策
+
+Python 运行时存在 GIL，但当前采集任务主要是网络 I/O，不应把 GIL 视为并行采集的主要阻碍。
+
+当前推荐策略如下：
+
+- `ONCE`
+  适合投递到有限 worker 池执行。
+- `POLLING`
+  适合由 scheduler 管理触发节奏，再交给有限 worker 池执行单次读取。
+- `SUBSCRIPTION`
+  不建议简单建成“一设备一线程”，更适合单独的连接管理器或事件驱动实现。
+
+明确不推荐：
+
+- 一台设备长期绑定一个线程
+- scheduler 自己串行执行所有采集任务
+- 在 scheduler 中直接编写协议采集细节
+
+### 当前阶段的演进顺序
+
+按渐进式开发原则，后续实现顺序建议如下：
+
+1. 先打通“准备执行计划 -> scheduler 分发 -> 单次执行 use case”主链路。
+2. 再把 `ONCE` 跑通，验证配置、采集、落库闭环。
+3. 然后为 `POLLING` 引入有限并发执行单元，而不是一设备一线程。
+4. 最后单独设计 `SUBSCRIPTION` 的 runner 与连接管理模型。
+
+这个顺序的目标是先建立稳定边界，再逐步扩展并行与长生命周期任务能力，避免在起步阶段把调度、执行、连接管理和协议细节揉成一个类。

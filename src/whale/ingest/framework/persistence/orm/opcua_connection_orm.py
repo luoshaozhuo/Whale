@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Integer, String
+from sqlalchemy import Boolean, CheckConstraint, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from whale.ingest.framework.persistence.base import Base
@@ -12,7 +12,24 @@ class OpcUaClientConnectionORM(Base):
     """Persist one OPC UA client connection row."""
 
     __tablename__ = "opcua_client_connections"
-    __table_args__ = {"comment": "OPC UA client connection configuration"}
+    __table_args__ = (
+        CheckConstraint(
+            "security_policy IN ("
+            "'None', "
+            "'Basic128Rsa15', "
+            "'Basic256', "
+            "'Basic256Sha256', "
+            "'Aes128_Sha256_RsaOaep', "
+            "'Aes256_Sha256_RsaPss'"
+            ")",
+            name="ck_opcua_client_connections_security_policy",
+        ),
+        CheckConstraint(
+            "security_mode IN ('None', 'Sign', 'SignAndEncrypt')",
+            name="ck_opcua_client_connections_security_mode",
+        ),
+        {"comment": "OPC UA client connection configuration"},
+    )
 
     id: Mapped[int] = mapped_column(
         Integer,
@@ -34,12 +51,16 @@ class OpcUaClientConnectionORM(Base):
     security_policy: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
-        comment="Configured OPC UA security policy",
+        comment=(
+            "Configured OPC UA security policy. Allowed values: "
+            "None, Basic128Rsa15, Basic256, Basic256Sha256, "
+            "Aes128_Sha256_RsaOaep, Aes256_Sha256_RsaPss"
+        ),
     )
     security_mode: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
-        comment="Configured OPC UA security mode",
+        comment="Configured OPC UA security mode. Allowed values: None, Sign, SignAndEncrypt",
     )
     update_interval_ms: Mapped[int] = mapped_column(
         Integer,

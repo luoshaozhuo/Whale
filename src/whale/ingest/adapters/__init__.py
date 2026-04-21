@@ -1,8 +1,11 @@
 """Adapters for the ingest module."""
 
 from whale.ingest.adapters.config import (
-    DbSourceConfigAdapter,
-    DbSourceRuntimeConfigAdapter,
+    SourceConnectionConfigRepository,
+    SourceScheduleConfigRepository,
 )
 
-__all__ = ["DbSourceConfigAdapter", "DbSourceRuntimeConfigAdapter"]
+__all__ = [
+    "SourceConnectionConfigRepository",
+    "SourceScheduleConfigRepository",
+]
