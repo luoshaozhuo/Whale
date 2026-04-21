@@ -162,3 +162,119 @@ python -m whale.ingest.infrastructure.init_db \
 - 不要让 service 直接暴露底层 session 细节给外层
 - 不要把复杂查询散落到调用方，统一收敛到 query service
 - 不要把 OPC UA 运行时轮询逻辑重新放回当前这组初始化模块
+
+## 增补：数据库建模与代码分层
+
+下面内容是在保留上述原始决策基础上，结合当前代码实现补充的更新说明。
+
+### 数据库建模补充
+
+#### 1. ORM 与数据库形态
+
+- 当前实现使用 SQLAlchemy 2.x 风格 ORM。
+- 当前默认数据库仍然是 SQLite 文件库，默认文件位置为 `src/whale/ingest/whale.db`。
+- 数据库连接参数不再写死在建库脚本中，而是统一由 `src/whale/ingest/config.py` 提供。
+
+#### 2. 表结构继续以 OPC UA 配置文件为蓝本
+
+数据库表仍然由两个输入源驱动建模：
+
+- `OPCUANodeSet.xml`
+- `OPCUA_client_connections.yaml`
+
+结合当前落地代码，表名已经统一明确为：
+
+- `opcua_nodeset_namespace`
+- `opcua_nodeset_aliases`
+- `opcua_nodeset_object_types`
+- `opcua_nodeset_objects`
+- `opcua_nodeset_variables`
+- `opcua_nodeset_references`
+- `opcua_client_connections`
+
+这意味着表名层面已经从早期的通用命名，进一步收敛为显式的 `opcua_` 前缀命名。
+
+#### 3. 每张表统一使用自增主键 `id`
+
+- 当前 ORM 模型中，每张表都带有自增主键 `id`。
+- `node_id`、`alias`、`name` 等业务字段继续保留，并用唯一约束保证业务唯一性。
+
+这样做是为了：
+
+- 更符合 SQLAlchemy ORM 的常规映射方式
+- 便于后续扩展关系映射和迁移
+- 让数据库结构与 ORM 模型之间保持更稳定的双向对应关系
+
+#### 4. 关系信息保留原始拓扑
+
+- `UAObject`、`UAVariable`、`UAObjectType` 之间的联系，不完全依赖硬编码字段表达。
+- 节点间引用关系继续保存在 `opcua_nodeset_references` 中。
+- 同时保留 `parent_node_id`、`type_definition` 等高频字段，作为对读取和组装逻辑友好的适度冗余。
+
+#### 5. 建库与模型恢复需要双向兼容
+
+- ORM 模型应能正向创建数据库。
+- 数据库结构也应能稳定映射回当前 ORM 模型。
+- 因此当前更强调表结构清晰、主键明确、约束显式，而不是依赖隐式规则。
+
+### 代码分层补充
+
+#### 1. 数据库相关代码继续收拢在 ingest 内部
+
+- 数据库能力不再散落到 `whale/` 顶层其它位置。
+- 当前实际代码已经收拢到 `whale.ingest.framework.db` 下。
+
+当前已落地的最小结构大致为：
+
+```text
+whale/ingest/
+├── config.py
+├── message_pipeline.py
+└── framework/
+    └── db/
+        ├── base.py
+        ├── session.py
+        ├── init_db.py
+        └── models/
+            └── opcua_config_models.py
+```
+
+这里表达的是当前实现状态，并不否定原文中关于 repository / service / api 分层的方向。
+
+#### 2. `framework/db` 只负责数据库技术实现
+
+- `base.py`
+  负责 SQLAlchemy `Base`
+- `session.py`
+  负责 engine、session factory、数据库 URL 拼装
+- `models/*`
+  负责 ORM 表模型
+- `init_db.py`
+  负责建表入口
+
+这一层的职责仍然是数据库技术实现，而不是业务编排层。
+
+#### 3. 写操作必须走 service 的约束保持不变
+
+虽然当前仓库里这部分还没有完全补齐，但外层访问规则不变：
+
+- 写操作必须走 service
+- repository 只负责数据访问
+- service 负责解析输入、调用 repository、控制事务边界
+
+#### 4. 读操作继续区分简单查询与复杂查询
+
+- 简单查询可以直接走 repository
+- 复杂查询应通过 query service 收敛
+
+这条约束依然有效，后续补齐 repository / query service 时应保持这一边界。
+
+#### 5. ingest 的职责边界不变
+
+`whale.ingest` 仍然只承担接入侧职责：
+
+- 发现 server 并获取配置
+- 周期性从 server 获取数据
+- 将数据发送到消息管道
+
+当前数据库模块承担的是配置初始化与配置读取支撑能力，不是通用业务数据库层。
