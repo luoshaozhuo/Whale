@@ -19,11 +19,15 @@ from whale.ingest.framework.persistence.orm.opcua_nodeset_orm import (
     UaReferenceORM,
     UaVariableORM,
 )
+from whale.ingest.framework.persistence.orm.opcua_source_item_binding_orm import (
+    OpcUaSourceItemBindingORM,
+)
 from whale.ingest.framework.persistence.orm.source_runtime_config_orm import (
     SourceRuntimeConfigORM,
 )
 
 UA_NODESET_NS = {"ua": "http://opcfoundation.org/UA/2011/03/UANodeSet.xsd"}
+DEFAULT_SAMPLE_ITEM_KEYS = ("TotW", "Spd", "WS")
 
 
 def load_sample_data(
@@ -34,6 +38,7 @@ def load_sample_data(
     """Load sample OPC UA configuration and NodeSet data into the database."""
     _load_connection_samples(session, connection_config_path)
     _load_nodeset_samples(session, nodeset_path)
+    _load_source_item_bindings(session)
     session.commit()
 
 
@@ -42,7 +47,7 @@ def _load_connection_samples(session: Session, connection_config_path: Path) -> 
     raw_config = yaml.safe_load(connection_config_path.read_text(encoding="utf-8")) or {}
     connections = raw_config.get("connections", [])
 
-    for index, item in enumerate(connections):
+    for item in connections:
         source_id = str(item["name"])
         update_interval_ms = int(item["update_interval_ms"])
 
@@ -60,11 +65,34 @@ def _load_connection_samples(session: Session, connection_config_path: Path) -> 
             SourceRuntimeConfigORM(
                 source_id=source_id,
                 protocol="opcua",
-                acquisition_mode="POLLING" if index == 0 else "ONCE",
+                acquisition_mode="ONCE",
                 interval_ms=update_interval_ms,
                 enabled=True,
             )
         )
+
+
+def _load_source_item_bindings(session: Session) -> None:
+    """Load explicit sample source-item bindings for each OPC UA connection."""
+    namespace_uri = session.query(NamespaceUriORM.uri).order_by(NamespaceUriORM.sort_order).first()
+    resolved_namespace_uri = namespace_uri[0] if namespace_uri is not None else None
+    source_ids = list(
+        session.query(OpcUaClientConnectionORM.name).order_by(OpcUaClientConnectionORM.name)
+    )
+
+    for source_index, (source_id,) in enumerate(source_ids):
+        for sort_order, item_key in enumerate(DEFAULT_SAMPLE_ITEM_KEYS):
+            session.add(
+                OpcUaSourceItemBindingORM(
+                    source_id=source_id,
+                    item_key=item_key,
+                    node_address=f"s={source_id}.{item_key}",
+                    namespace_uri=resolved_namespace_uri,
+                    display_name=item_key,
+                    enabled=True,
+                    sort_order=source_index * len(DEFAULT_SAMPLE_ITEM_KEYS) + sort_order,
+                )
+            )
 
 
 def _load_nodeset_samples(session: Session, nodeset_path: Path) -> None:

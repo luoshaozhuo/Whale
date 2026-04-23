@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _env_path(name: str, default: str | Path) -> str | Path:
+    """Return one configured path with environment override support."""
+    return os.environ.get(name, default)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +52,7 @@ CONFIG = Config(
         drivername="sqlite",  # for postgre, postgresql+psycopg2
         host=None,  # for postgre, localhost
         port=None,  # for postgre, 5432
-        database=PROJECT_ROOT / "whale.db",  # for postgre, whale
+        database=_env_path("WHALE_INGEST_DB_PATH", PROJECT_ROOT / "whale.db"),
         username=None,  # for postgre, os.environ.get("WHALE_DB_USERNAME")
         password=None,  # for postgre, os.environ.get("WHALE_DB_PASSWORD")
         pool_size=10,
@@ -56,7 +62,17 @@ CONFIG = Config(
         pool_pre_ping=True,
     ),
     opcua=OpcUaConfig(
-        connection_config_path="tools/opcua_sim/templates/OPCUA_client_connections.yaml",
-        nodeset_path="tools/opcua_sim/templates/OPCUANodeSet.xml",
+        connection_config_path=str(
+            _env_path(
+                "WHALE_INGEST_OPCUA_CONNECTION_CONFIG_PATH",
+                "tools/opcua_sim/templates/OPCUA_client_connections.yaml",
+            )
+        ),
+        nodeset_path=str(
+            _env_path(
+                "WHALE_INGEST_OPCUA_NODESET_PATH",
+                "tools/opcua_sim/templates/OPCUANodeSet.xml",
+            )
+        ),
     ),
 )

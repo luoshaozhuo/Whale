@@ -3,43 +3,52 @@
 Current stage:
 - focus on ONCE mode first
 - use APScheduler as the scheduling backend
-- scheduler reads enabled execution plans and dispatches jobs
+- scheduler reads enabled runtime configs and dispatches jobs
 - POLLING and SUBSCRIPTION keep explicit extension points
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
-from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, JobExecutionEvent
-from apscheduler.schedulers.base import BaseScheduler
+from apscheduler.events import (  # type: ignore[import-untyped]
+    EVENT_JOB_ERROR,
+    EVENT_JOB_EXECUTED,
+    JobExecutionEvent,
+)
+from apscheduler.schedulers.base import BaseScheduler  # type: ignore[import-untyped]
 
-from whale.ingest.ports.source.source_execution_plan_port import SourceExecutionPlanPort
+from whale.ingest.ports.runtime.source_runtime_config_port import SourceRuntimeConfigPort
 from whale.ingest.runtime.acquisition_mode import AcquisitionMode
 from whale.ingest.runtime.job_status import JobStatus
 from whale.ingest.runtime.scheduler_factory import build_scheduler
 from whale.ingest.runtime.scheduler_job import ScheduledSourceJob
 from whale.ingest.runtime.scheduler_settings import SchedulerSettings
-from whale.ingest.usecases.dtos.maintain_source_state_command import (
-    MaintainSourceStateCommand,
+from whale.ingest.usecases.dtos.acquisition_status import AcquisitionStatus
+from whale.ingest.usecases.dtos.refresh_source_state_command import (
+    RefreshSourceStateCommand,
 )
-from whale.ingest.usecases.maintain_source_state_usecase import (
-    MaintainSourceStateUseCase,
+from whale.ingest.usecases.dtos.source_runtime_config_data import (
+    SourceRuntimeConfigData,
+)
+from whale.ingest.usecases.refresh_source_state_usecase import (
+    RefreshSourceStateUseCase,
 )
 
 
 class SourceScheduler:
-    """Drive ingest use cases from execution plans."""
+    """Drive ingest use cases from runtime configurations."""
 
     def __init__(
         self,
-        execution_plan_port: SourceExecutionPlanPort,
-        maintain_source_state_usecase: MaintainSourceStateUseCase,
+        runtime_config_port: SourceRuntimeConfigPort,
+        refresh_source_state_usecase: RefreshSourceStateUseCase,
         settings: SchedulerSettings | None = None,
     ) -> None:
         """Initialize the scheduler with required dependencies."""
-        self._execution_plan_port = execution_plan_port
-        self._maintain_source_state_usecase = maintain_source_state_usecase
+        self._runtime_config_port = runtime_config_port
+        self._refresh_source_state_usecase = refresh_source_state_usecase
         self._settings = settings or SchedulerSettings()
         self._scheduler: BaseScheduler = build_scheduler(self._settings)
         self._jobs: dict[str, ScheduledSourceJob] = {}
@@ -53,6 +62,26 @@ class SourceScheduler:
         """Load enabled execution plans and start the scheduler."""
         self.reload()
         self._scheduler.start()
+
+    def wait_until_terminal(self, timeout_seconds: float) -> bool:
+        """Wait until all registered jobs reach terminal states."""
+        deadline = time.monotonic() + timeout_seconds
+        terminal_statuses = {JobStatus.FINISHED, JobStatus.FAILED, JobStatus.STOPPED}
+
+        while time.monotonic() < deadline:
+            if all(job.status in terminal_statuses for job in self._jobs.values()):
+                return True
+            time.sleep(0.05)
+
+        return all(job.status in terminal_statuses for job in self._jobs.values())
+
+    def has_failures(self) -> bool:
+        """Return whether any registered job failed."""
+        return any(
+            job.status is JobStatus.FAILED
+            or (job.last_result is not None and job.last_result.status is AcquisitionStatus.FAILED)
+            for job in self._jobs.values()
+        )
 
     def stop(self, wait: bool = True) -> None:
         """Shutdown the scheduler and mark all runtime jobs as stopped."""
@@ -73,25 +102,27 @@ class SourceScheduler:
         return list(self._jobs.values())
 
     def _register_jobs(self) -> None:
-        """Register jobs from enabled execution plans."""
-        plans = self._execution_plan_port.get_enabled_execution_plans()
+        """Register jobs from enabled runtime configs."""
+        runtime_configs = self._runtime_config_port.list_enabled()
 
-        for plan in plans:
-            mode = self._get_acquisition_mode(plan)
+        for runtime_config in runtime_configs:
+            mode = self._get_acquisition_mode(runtime_config)
 
             if mode is AcquisitionMode.ONCE:
-                self._register_once_job(plan)
+                self._register_once_job(runtime_config)
             elif mode is AcquisitionMode.POLLING:
-                self._register_polling_job(plan)
+                pass
+                # self._register_polling_job(runtime_config)
             elif mode is AcquisitionMode.SUBSCRIPTION:
-                self._register_subscription_job(plan)
+                pass
+                # self._register_subscription_job(runtime_config)
             else:
                 raise ValueError(f"Unsupported acquisition mode: {mode}")
 
-    def _register_once_job(self, plan: Any) -> None:
+    def _register_once_job(self, runtime_config: SourceRuntimeConfigData) -> None:
         """Register one immediate ONCE job."""
-        source_id = self._get_source_id(plan)
-        job_id = self._build_once_job_id(source_id)
+        runtime_config_id = runtime_config.runtime_config_id
+        job_id = self._build_once_job_id(runtime_config_id)
 
         if job_id in self._jobs:
             return
@@ -100,40 +131,46 @@ class SourceScheduler:
             self._run_once_job,
             id=job_id,
             replace_existing=False,
-            args=[source_id],
+            args=[runtime_config_id],
         )
 
         self._jobs[job_id] = ScheduledSourceJob(
-            source_id=source_id,
-            mode=AcquisitionMode.ONCE,
+            runtime_config=runtime_config,
             aps_job_id=job_id,
             status=JobStatus.SCHEDULED,
         )
 
-    def _register_polling_job(self, plan: Any) -> None:
+    def _register_polling_job(self, runtime_config: Any) -> None:
         """Register one polling job.
 
         Current stage keeps the branch explicit but unimplemented.
         """
+        del runtime_config
         raise NotImplementedError("POLLING mode is not implemented yet")
 
-    def _register_subscription_job(self, plan: Any) -> None:
+    def _register_subscription_job(self, runtime_config: Any) -> None:
         """Register one subscription job.
 
         Current stage keeps the branch explicit but unimplemented.
         """
+        del runtime_config
         raise NotImplementedError("SUBSCRIPTION mode is not implemented yet")
 
-    def _run_once_job(self, source_id: str) -> None:
+    def _run_once_job(self, runtime_config_id: int) -> None:
         """Execute one ONCE job."""
-        job_id = self._build_once_job_id(source_id)
+        job_id = self._build_once_job_id(runtime_config_id)
         runtime_job = self._jobs.get(job_id)
 
         if runtime_job is not None:
             runtime_job.status = JobStatus.RUNNING
 
-        command = MaintainSourceStateCommand(source_id=source_id)
-        self._maintain_source_state_usecase.execute(command)
+        result = self._refresh_source_state_usecase.execute(
+            RefreshSourceStateCommand(runtime_config_id=runtime_config_id)
+        )
+        if runtime_job is not None:
+            runtime_job.last_result = result
+            if result.status is AcquisitionStatus.FAILED:
+                runtime_job.status = JobStatus.FAILED
 
     def _on_job_executed_or_failed(self, event: JobExecutionEvent) -> None:
         """Handle APScheduler job completion events."""
@@ -141,7 +178,7 @@ class SourceScheduler:
         if runtime_job is None:
             return
 
-        if event.exception is None:
+        if event.exception is None and runtime_job.status is not JobStatus.FAILED:
             runtime_job.status = JobStatus.FINISHED
         else:
             runtime_job.status = JobStatus.FAILED
@@ -153,30 +190,16 @@ class SourceScheduler:
         self._jobs.clear()
 
     @staticmethod
-    def _build_once_job_id(source_id: str) -> str:
+    def _build_once_job_id(runtime_config_id: int) -> str:
         """Build one stable job identifier for ONCE mode."""
-        return f"once:{source_id}"
+        return f"once:{runtime_config_id}"
 
     @staticmethod
-    def _get_source_id(plan: Any) -> str:
-        """Extract source_id from one execution plan."""
-        source_id = getattr(plan, "source_id", None)
-        if not isinstance(source_id, str) or not source_id.strip():
-            raise ValueError("Execution plan missing valid source_id")
-        return source_id.strip()
-
-    @staticmethod
-    def _get_acquisition_mode(plan: Any) -> AcquisitionMode:
-        """Extract acquisition mode from one execution plan."""
-        mode = getattr(plan, "acquisition_mode", None)
-        if mode is None:
-            schedule_spec = getattr(plan, "schedule_spec", None)
-            mode = getattr(schedule_spec, "acquisition_mode", None)
-
-        if not isinstance(mode, str):
-            raise ValueError("Execution plan missing valid acquisition_mode")
-
+    def _get_acquisition_mode(runtime_config: SourceRuntimeConfigData) -> AcquisitionMode:
+        """Extract acquisition mode from one runtime config."""
         try:
-            return AcquisitionMode(mode.upper())
+            return AcquisitionMode(runtime_config.acquisition_mode.upper())
         except ValueError as exc:
-            raise ValueError(f"Unsupported acquisition mode: {mode}") from exc
+            raise ValueError(
+                f"Unsupported acquisition mode: {runtime_config.acquisition_mode}"
+            ) from exc

@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
-from apscheduler.executors.pool import ProcessPoolExecutor, ThreadPoolExecutor
-from apscheduler.jobstores.memory import MemoryJobStore
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.schedulers.base import BaseScheduler
-from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.executors.pool import (  # type: ignore[import-untyped]
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+)
+from apscheduler.jobstores.memory import MemoryJobStore  # type: ignore[import-untyped]
+from apscheduler.jobstores.sqlalchemy import (  # type: ignore[import-untyped]
+    SQLAlchemyJobStore,
+)
+from apscheduler.schedulers.background import (  # type: ignore[import-untyped]
+    BackgroundScheduler,
+)
+from apscheduler.schedulers.base import BaseScheduler  # type: ignore[import-untyped]
+from apscheduler.schedulers.blocking import (  # type: ignore[import-untyped]
+    BlockingScheduler,
+)
 
 from whale.ingest.runtime.scheduler_settings import SchedulerSettings
 

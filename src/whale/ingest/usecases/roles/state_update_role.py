@@ -1,4 +1,4 @@
-"""State-update role for maintain-source-state use case."""
+"""State-update role for refresh-source-state use case."""
 
 from __future__ import annotations
 
@@ -9,24 +9,23 @@ from whale.ingest.usecases.dtos.source_state_data import SourceStateData
 
 
 class StateUpdateRole:
-    """Persist acquired source states from shared use-case data."""
+    """Persist acquired source states into the local state cache."""
 
     def __init__(
         self,
-        data: SourceStateData,
         store_port: SourceStateRepositoryPort,
     ) -> None:
-        """Bind the role to source-state data and store port."""
-        self._data = data
+        """Store the repository dependency used for persistence."""
         self._store_port = store_port
 
-    def apply(self) -> None:
-        """Persist acquired states and store the updated count in shared data."""
-        if not self._data.acquired_states:
-            self._data.updated_count = 0
-            return
+    def apply(self, data: SourceStateData) -> SourceStateData:
+        """Persist acquired states and return the updated source-state data."""
+        if not data.acquired_states:
+            data.updated_count = 0
+            return data
 
-        self._data.updated_count = self._store_port.upsert_many(
-            self._data.source_id,
-            self._data.acquired_states,
+        data.updated_count = self._store_port.upsert_many(
+            data.source_id,
+            data.acquired_states,
         )
+        return data

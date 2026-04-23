@@ -24,10 +24,17 @@ class SourceRuntimeConfigORM(Base):
         {"comment": "Source runtime scheduling configuration"},
     )
 
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="Primary key for one runtime configuration row",
+    )
     source_id: Mapped[str] = mapped_column(
         String(255),
-        primary_key=True,
-        comment="Stable source identifier used by the ingest scheduler",
+        nullable=False,
+        index=True,
+        comment="Stable source identifier targeted by the runtime configuration",
     )
     protocol: Mapped[str] = mapped_column(
         String(64),

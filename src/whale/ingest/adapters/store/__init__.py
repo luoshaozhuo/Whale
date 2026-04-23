@@ -1,7 +1,7 @@
 """Store adapters for ingest."""
 
-from whale.ingest.adapters.store.counting_source_state_repository_adapter import (
-    NoOpSourceStateRepositoryAdapter,
+from whale.ingest.adapters.store.sqlite_source_state_repository import (
+    SqliteSourceStateRepository,
 )
 
-__all__ = ["NoOpSourceStateRepositoryAdapter"]
+__all__ = ["SqliteSourceStateRepository"]

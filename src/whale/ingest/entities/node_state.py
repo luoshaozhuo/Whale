@@ -1,4 +1,4 @@
-"""Point-state entity for ingest.
+"""Node-state entity for ingest.
 
 This is a minimal reusable ingest entity. Future iterations may extend it with
 fields such as quality, source timestamp, staleness, and last receive time.
@@ -10,8 +10,8 @@ from dataclasses import dataclass
 
 
 @dataclass(slots=True)
-class PointState:
-    """Minimal state snapshot for one point."""
+class NodeState:
+    """Minimal state snapshot for one node."""
 
-    point_id: str
+    node_id: str
     value: object | None = None
