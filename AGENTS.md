@@ -1,132 +1,84 @@
-# Whale 项目说明（Codex）
+# AGENTS.md
 
-本文件定义 Whale 仓库级通用约束。  
-仅保留跨任务、跨语言、跨目录都稳定生效的规则。  
-语言专项规则不放在本文件内，按任务类型由对应 project-scoped agent 处理。
+# Whale Repository Guide
 
----
+This file defines repository-wide guidance for Codex in the Whale project.
 
-## 1. 适用范围与优先级
-
-### 1.1 适用范围
-
-- 本文件适用于整个仓库。
-- 本文件只定义仓库级通用规则，不展开语言专项细则。
-- 涉及具体语言、框架、测试分层、文档规范时，应由对应专项 agent 继续约束。
-
-### 1.2 执行优先级
-
-执行优先级如下：
-
-1. 用户在当前对话中的明确要求
-2. 当前目录生效的 `AGENTS.md` / 更近层级的覆盖规则
-3. 本文件
-4. agent 自带默认行为、工具默认行为、一般经验判断
-
-必须遵守以下原则：
-
-- 不得跳过规则读取步骤后直接依赖历史记忆、惯性做法或检查器默认行为。
-- 规则文本优先于“通常项目里一般这么做”的经验判断。
-- 工具检查结果仅作为辅助验证，不能将“检查通过”等同于“已经满足规则”。
+Keep this file short and practical.
+Use it for shared repository expectations, not as a replacement for language-specific policy documents or task workflows.
 
 ---
 
-## 2. 对话与输出风格
+## 1. Scope
 
-- 回答简练，言简意赅。
-- 优先给结论、决策、步骤、影响范围和边界。
-- 不直接贴详细代码，除非用户明确要求。
-- 聚焦当前问题，避免冗长解释。
-- 输出应便于审查、复制和继续迭代。
+- This file applies to the whole repository.
+- It defines shared repository guidance across tasks and languages.
+- Language-specific constraints should live in repository policy documents and, when useful, specialized subagents.
 
 ---
 
-## 3. 开发方法论
+## 2. Working style
 
-- 采用渐进式开发方式，从最简方案开始，先打通最小闭环。
-- 避免过度设计，按当前需求实现，不提前为未来假设构建复杂抽象。
-- 功能稳定后再进行阶段性重构，而不是在起步阶段追求完美架构。
-- 坚持测试驱动，或至少测试优先验证，确保每次迭代可靠。
-
----
-
-## 4. 通用工程约束
-
-### 4.1 改动边界
-
-- 优先做最小可行改动，避免无关重构。
-- 不要为了顺手优化而修改与当前任务无关的文件。
-- 若任务只要求局部修改，不要扩大为全局改造。
-- 修改代码时，优先保持现有行为稳定。
-- 新增实现应与现有项目结构保持一致，避免引入不必要的新抽象。
-
-### 4.2 质量与交付
-
-- 每次提交前，应确保当前改动通过对应的质量检查与必要测试。
-- 配置、规则、测试资产与实现保持一致，并纳入版本控制。
-- 完成修改后，输出必须能支持人工审查与后续迭代。
-- 不得将“代码已写完”直接等同于“任务已完成”。
-
-### 4.3 自动化检查
-
-- 若项目内存在对应的质量检查、测试流程或专项 agent，应主动使用。
-- 自动化检查用于发现问题与辅助验证，不替代规则对照与人工判断。
-- 不得只做最小 lint 修复后就宣称“已按规则完成”。
+- Keep responses concise and decision-oriented.
+- Prioritize conclusions, next steps, impact scope, and constraints.
+- Do not dump large code blocks unless explicitly requested.
+- Prefer outputs that are easy to review, copy, and continue from.
 
 ---
 
-## 5. 任务分流约定
+## 3. Engineering approach
 
-### 5.1 Python 任务
-
-- 编写或修改 Python 代码时，应优先使用项目内的 Python 专项 agent。
-- 根文件不重复堆叠 Python 细则。
-- 不得把 Python 工具链默认行为替代为规则执行。
-
-### 5.2 非 Python 任务
-
-- 非 Python 任务不默认套用 Python 专项规则。
-- 但仍必须遵守本文件中的通用工程约束、最小改动原则与输出口径。
+- Prefer incremental delivery and the smallest useful change.
+- Avoid over-design and avoid introducing abstractions before they are needed.
+- Preserve existing behavior unless the task explicitly changes it.
+- Refactor in stages after behavior is stable, not preemptively.
+- Validate changes with relevant checks and tests.
 
 ---
 
-## 6. 完成后的汇报要求
+## 4. Change boundaries
 
-完成任务后，必须明确说明：
-
-1. 本次按哪些规则执行
-2. 修改了哪些文件或哪些部分
-3. 做了哪些验证
-4. 哪些结论来自规则落实，哪些来自工具检查结果
-5. 若存在未完成项、风险项、规则冲突或环境限制，必须直接说明
-
-禁止以下汇报方式：
-
-- 只说“已完成”
-- 只说“检查通过”
-- 只贴工具输出而不说明规则落实情况
-- 未说明受影响范围就宣称改动完成
+- Do not perform unrelated refactors.
+- Do not modify files that are outside the current task without clear need.
+- Avoid formatting churn unrelated to the requested change.
+- Keep new implementations consistent with the existing repository structure.
 
 ---
 
-## 7. 禁止事项
+## 5. Task routing
 
-- 不为小问题引入复杂方案或大规模重构
-- 不修改与当前任务无关的代码、配置或测试
-- 不跳过规则读取步骤直接开始修改
-- 不把工具默认行为当作规则本身
-- 不把检查通过等同于规则满足
-- 不在未验证的情况下宣称完成
-- 不在用户未要求时输出大段实现代码
-- 不因顺手优化而扩大改动边界
+- Use the Python subagent for Python-specific implementation and validation work.
+- Non-Python tasks should not automatically inherit Python-specific policy details.
 
 ---
 
-## 8. 工作目标
+## 6. Repository policy documents
 
-在 Whale 项目中，Codex 应始终遵循以下目标：
+- For Python tasks, also follow the documents under `.codex/policies/`.
+- These files are repository policy documents and review criteria.
+- They are not native Codex rule objects, but they are mandatory project constraints when applicable.
 
-- 先理解约束，再实施修改
-- 先保证闭环，再考虑扩展
-- 先保证行为稳定，再考虑优化
-- 先最小改动交付，再按需要迭代演进
+---
+
+## 7. Reporting requirements
+
+After completing a task, report clearly:
+
+1. what guidance and policy documents were followed
+2. what files or sections were changed
+3. what checks and tests were run
+4. what conclusions come from policy compliance work
+5. what conclusions come from tool-based validation
+6. any remaining risks, environment limits, or unresolved ambiguities
+
+Do not report completion using only “done”, “passed”, or raw tool output.
+
+---
+
+## 8. Prohibited behavior
+
+- Do not skip repository guidance and jump straight to editing.
+- Do not treat tool defaults as the source of truth.
+- Do not equate “checks passed” with “all repository requirements satisfied”.
+- Do not claim completion without validation.
+- Do not expand a local task into a broad redesign without need.
