@@ -1,5 +1,3 @@
-# python-docstrings.md
-
 # Python Docstring Policy
 
 This document defines docstring expectations for Python code in this repository.

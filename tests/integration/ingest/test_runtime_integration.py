@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
+import socket
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -15,6 +18,13 @@ from sqlalchemy import create_engine
 import whale.ingest.framework.persistence.orm as ingest_orm
 from tools.opcua_sim.server_runtime import OpcUaServerRuntime, load_server_config
 from whale.ingest.framework.persistence.base import Base
+
+
+def _get_free_port() -> int:
+    """Return one currently available local TCP port."""
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def _create_ingest_database(database_path: Path) -> None:
@@ -33,63 +43,110 @@ def _seed_runtime_connection(
     enabled: bool = True,
     acquisition_mode: str = "ONCE",
 ) -> int:
-    """Insert runtime config, connection config and explicit source-item bindings."""
+    """Insert one device, acquisition model and acquisition task."""
     with sqlite3.connect(database_path) as connection:
         connection.execute(
             """
-            INSERT INTO opcua_client_connections
-            (name, endpoint, security_policy, security_mode, update_interval_ms, enabled)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO substation
+            (name, enabled)
+            VALUES (?, ?)
             """,
-            (source_id, endpoint, "None", "None", 100, 1),
+            ("S1", 1),
         )
+        substation_id = int(connection.execute("SELECT last_insert_rowid()").fetchone()[0])
         connection.execute(
             """
-            INSERT INTO source_runtime_config
-            (source_id, protocol, acquisition_mode, interval_ms, enabled)
+            INSERT INTO device
+            (substation_id, device_code, device_model, line_number, enabled)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (source_id, "opcua", acquisition_mode, 0, int(enabled)),
+            (
+                substation_id,
+                source_id,
+                "WTG",
+                "L1",
+                1,
+            ),
+        )
+        device_id = int(connection.execute("SELECT last_insert_rowid()").fetchone()[0])
+        connection.execute(
+            """
+            INSERT INTO acquisition_model
+            (model_id, model_version, protocol, model_params)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("WTG_OPCUA_DEMO", "v1", "opcua", json.dumps({"namespace_uri": "urn:windfarm:2wtg"})),
+        )
+        model_id = int(connection.execute("SELECT last_insert_rowid()").fetchone()[0])
+        connection.execute(
+            """
+            INSERT INTO acquisition_task
+            (
+                device_id,
+                model_id,
+                model_version,
+                acquisition_mode,
+                interval_ms,
+                endpoint,
+                connection_params,
+                enabled
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                device_id,
+                "WTG_OPCUA_DEMO",
+                "v1",
+                acquisition_mode,
+                0,
+                endpoint,
+                json.dumps({"security_policy": "None", "security_mode": "None"}),
+                int(enabled),
+            ),
         )
         runtime_config_id = int(connection.execute("SELECT last_insert_rowid()").fetchone()[0])
         connection.executemany(
             """
-            INSERT INTO opcua_source_item_binding
+            INSERT INTO acquisition_variable
             (
-                source_id,
-                item_key,
-                node_address,
-                namespace_uri,
+                model_id,
+                variable_key,
+                locator,
+                locator_type,
+                variable_params,
                 display_name,
                 enabled,
                 sort_order
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
-                    source_id,
+                    model_id,
                     "TotW",
-                    f"s={source_id}.TotW",
-                    "urn:windfarm:2wtg",
+                    "s={device_code}.TotW",
+                    "node_path",
+                    json.dumps({}),
                     "TotW",
                     1,
                     20,
                 ),
                 (
-                    source_id,
+                    model_id,
                     "Spd",
-                    f"s={source_id}.Spd",
-                    "urn:windfarm:2wtg",
+                    "s={device_code}.Spd",
+                    "node_path",
+                    json.dumps({}),
                     "Spd",
                     1,
                     10,
                 ),
                 (
-                    source_id,
+                    model_id,
                     "WS",
-                    f"s={source_id}.WS",
-                    "urn:windfarm:2wtg",
+                    "s={device_code}.WS",
+                    "node_path",
+                    json.dumps({}),
                     "WS",
                     1,
                     30,
@@ -146,7 +203,7 @@ def test_python_m_whale_ingest_reads_opcua_and_persists_node_states(
     """Run the ingest entrypoint end-to-end against one live OPC UA simulator."""
     database_path = tmp_path / "ingest.sqlite"
     _create_ingest_database(database_path)
-    endpoint = "opc.tcp://127.0.0.1:4851"
+    endpoint = f"opc.tcp://127.0.0.1:{_get_free_port()}"
     connection_config_path = _write_connection_config(tmp_path, endpoint)
     runtime_config_id = _seed_runtime_connection(
         database_path,
@@ -165,17 +222,15 @@ def test_python_m_whale_ingest_reads_opcua_and_persists_node_states(
 
     with sqlite3.connect(database_path) as connection:
         rows = connection.execute("""
-            SELECT source_id, node_key, value
-            FROM source_node_latest_state
-            ORDER BY node_key
+            SELECT device_code, model_id, variable_key, value
+            FROM variable_state
+            ORDER BY variable_key
             """).fetchall()
-        history_row_count = connection.execute("SELECT COUNT(*) FROM source_node_state").fetchone()
 
     assert [row[0] for row in rows] == ["WTG_01", "WTG_01", "WTG_01"]
-    assert [row[1] for row in rows] == ["Spd", "TotW", "WS"]
-    assert all(float(row[2]) > 0 for row in rows)
-    assert history_row_count is not None
-    assert int(history_row_count[0]) == 0
+    assert [row[1] for row in rows] == ["WTG_OPCUA_DEMO", "WTG_OPCUA_DEMO", "WTG_OPCUA_DEMO"]
+    assert [row[2] for row in rows] == ["Spd", "TotW", "WS"]
+    assert all(float(row[3]) > 0 for row in rows)
     assert f"once:{runtime_config_id}" not in result.stderr
 
 
@@ -201,10 +256,7 @@ def test_python_m_whale_ingest_reports_failed_jobs_without_persisting_rows(
     assert "one or more scheduler jobs failed" in result.stderr
 
     with sqlite3.connect(database_path) as connection:
-        row_count = connection.execute("SELECT COUNT(*) FROM source_node_latest_state").fetchone()
-        history_row_count = connection.execute("SELECT COUNT(*) FROM source_node_state").fetchone()
+        row_count = connection.execute("SELECT COUNT(*) FROM variable_state").fetchone()
 
     assert row_count is not None
     assert int(row_count[0]) == 0
-    assert history_row_count is not None
-    assert int(history_row_count[0]) == 0

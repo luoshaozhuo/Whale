@@ -14,6 +14,3 @@ class SourceRuntimeConfigPort(Protocol):
 
     def list_enabled(self) -> list[SourceRuntimeConfigData]:
         """Return enabled runtime configurations."""
-
-    def get_by_id(self, runtime_config_id: int) -> SourceRuntimeConfigData:
-        """Return one runtime configuration or raise when it does not exist."""

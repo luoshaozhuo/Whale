@@ -1,5 +1,3 @@
-# python-typing.md
-
 # Python Typing Policy
 
 This document defines Python typing expectations for this repository.

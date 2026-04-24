@@ -1,7 +1,7 @@
 """Store-side ports for ingest."""
 
-from whale.ingest.ports.store.source_state_repository_port import (
-    SourceStateRepositoryPort,
+from whale.ingest.ports.store.source_state_store_port import (
+    SourceStateStorePort,
 )
 
-__all__ = ["SourceStateRepositoryPort"]
+__all__ = ["SourceStateStorePort"]

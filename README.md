@@ -47,3 +47,7 @@ Whale/
 - `CODEBUDDY.md`：项目级配置和约束
 - `.codebuddy/`：CodeBuddy规则和模板
 - `pyproject.toml`：Python工具链配置
+
+## init_db
+
+PYTHONPATH=src python -m whale.ingest.framework.persistence.init_db

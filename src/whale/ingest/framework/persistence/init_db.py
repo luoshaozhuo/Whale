@@ -15,12 +15,7 @@ from whale.ingest.framework.persistence.session import engine, session_scope
 
 def init_db() -> None:
     """Create ORM tables and optionally load sample data."""
-    import_module("whale.ingest.framework.persistence.orm.opcua_connection_orm")
-    import_module("whale.ingest.framework.persistence.orm.opcua_source_item_binding_orm")
-    import_module("whale.ingest.framework.persistence.orm.opcua_nodeset_orm")
-    import_module("whale.ingest.framework.persistence.orm.source_node_latest_state_orm")
-    import_module("whale.ingest.framework.persistence.orm.source_node_state_orm")
-    import_module("whale.ingest.framework.persistence.orm.source_runtime_config_orm")
+    import_module("whale.ingest.framework.persistence.orm")
 
     if _has_existing_schema():
         confirmation = input(_build_delete_confirmation_prompt()).strip()

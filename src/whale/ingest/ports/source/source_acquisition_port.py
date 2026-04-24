@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from typing import Protocol
 
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
@@ -16,11 +17,11 @@ from whale.ingest.usecases.dtos.source_subscription_request import (
 class SourceAcquisitionPort(Protocol):
     """Acquire source states from one configured source."""
 
-    def read_once(
+    def read(
         self,
         request: SourceAcquisitionRequest,
-    ) -> list[AcquiredNodeState]:
+    ) -> Awaitable[list[AcquiredNodeState]]:
         """Acquire a batch of source states for one source."""
 
-    def subscribe(self, request: SourceSubscriptionRequest) -> None:
+    def subscribe(self, request: SourceSubscriptionRequest) -> Awaitable[None]:
         """Start subscription-based acquisition for one source."""

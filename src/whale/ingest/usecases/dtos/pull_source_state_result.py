@@ -1,19 +1,19 @@
-"""Result DTO for the refresh-source-state use case."""
+"""Result DTO for the pull-source-state use case."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from whale.ingest.usecases.dtos.acquisition_status import AcquisitionStatus
 
 
 @dataclass(slots=True)
-class RefreshSourceStateResult:
-    """Expose the business result of one refresh execution."""
+class PullSourceStateResult:
+    """Expose the business outcome of one pull execution."""
 
     runtime_config_id: int
-    source_id: str
     status: AcquisitionStatus
-    received_count: int
-    updated_count: int
+    started_at: datetime
+    ended_at: datetime
     error_message: str | None

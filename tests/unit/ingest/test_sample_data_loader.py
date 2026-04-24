@@ -9,22 +9,21 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from whale.ingest.framework.persistence.base import Base
-from whale.ingest.framework.persistence.orm.source_runtime_config_orm import (
-    SourceRuntimeConfigORM,
+from whale.ingest.framework.persistence.orm.acquisition_task_orm import (
+    AcquisitionTaskORM,
 )
-from whale.ingest.framework.persistence.sample_data_loader import (
-    _load_connection_samples,
-)
+from whale.ingest.framework.persistence.sample_data_loader import load_sample_data
 
 
-def test_load_connection_samples_uses_once_for_all_runtime_configs(
+def test_load_sample_data_uses_once_for_all_acquisition_tasks(
     tmp_path: Path,
 ) -> None:
-    """Write ONCE runtime configs for every generated sample source."""
+    """Write ONCE acquisition tasks for every generated sample device."""
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
     config_path = tmp_path / "opcua-connections.yaml"
+    nodeset_path = tmp_path / "nodeset.xml"
     config_path.write_text(
         yaml.safe_dump(
             {
@@ -49,16 +48,24 @@ def test_load_connection_samples_uses_once_for_all_runtime_configs(
         ),
         encoding="utf-8",
     )
+    nodeset_path.write_text(
+        """
+<UANodeSet xmlns="http://opcfoundation.org/UA/2011/03/UANodeSet.xsd">
+  <NamespaceUris>
+    <Uri>http://opcfoundation.org/UA/</Uri>
+    <Uri>urn:windfarm:2wtg</Uri>
+  </NamespaceUris>
+</UANodeSet>
+""".strip() + "\n",
+        encoding="utf-8",
+    )
 
     try:
-        _load_connection_samples(session, config_path)
-        session.flush()
+        load_sample_data(session, config_path, nodeset_path)
 
         acquisition_modes = list(
             session.scalars(
-                select(SourceRuntimeConfigORM.acquisition_mode).order_by(
-                    SourceRuntimeConfigORM.source_id
-                )
+                select(AcquisitionTaskORM.acquisition_mode).order_by(AcquisitionTaskORM.id)
             )
         )
 

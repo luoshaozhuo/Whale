@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import Engine
 
-from whale.ingest.framework.db import init_db as init_db_module
+from whale.ingest.framework.persistence import init_db as init_db_module
 
 
 def _create_sqlite_engine(database_path: Path) -> Engine:
@@ -31,6 +31,7 @@ def test_init_db_creates_all_framework_tables(
     database_path = tmp_path / "framework.sqlite"
     engine = _create_sqlite_engine(database_path)
     monkeypatch.setattr(init_db_module, "engine", engine)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
 
     assert inspect(engine).get_table_names() == []
 
@@ -39,11 +40,10 @@ def test_init_db_creates_all_framework_tables(
 
     table_names = set(inspect(engine).get_table_names())
     assert table_names == {
-        "opcua_client_connections",
-        "opcua_nodeset_aliases",
-        "opcua_nodeset_namespace",
-        "opcua_nodeset_object_types",
-        "opcua_nodeset_objects",
-        "opcua_nodeset_references",
-        "opcua_nodeset_variables",
+        "acquisition_model",
+        "acquisition_task",
+        "acquisition_variable",
+        "device",
+        "substation",
+        "variable_state",
     }

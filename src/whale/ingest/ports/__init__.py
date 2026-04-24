@@ -7,13 +7,13 @@ from whale.ingest.ports.source import (
     SourceAcquisitionDefinitionPort,
     SourceAcquisitionPort,
 )
-from whale.ingest.ports.store.source_state_repository_port import (
-    SourceStateRepositoryPort,
+from whale.ingest.ports.store.source_state_store_port import (
+    SourceStateStorePort,
 )
 
 __all__ = [
     "SourceAcquisitionDefinitionPort",
     "SourceAcquisitionPort",
     "SourceRuntimeConfigPort",
-    "SourceStateRepositoryPort",
+    "SourceStateStorePort",
 ]

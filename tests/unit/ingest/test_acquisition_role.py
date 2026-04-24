@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
@@ -16,27 +17,7 @@ from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionDa
 from whale.ingest.usecases.dtos.source_runtime_config_data import (
     SourceRuntimeConfigData,
 )
-from whale.ingest.usecases.roles.acquisition_role import AcquisitionRole
-
-
-class FakeRuntimeConfigPort:
-    """Fake runtime-config port for role tests."""
-
-    def __init__(self, config: SourceRuntimeConfigData) -> None:
-        """Store the runtime config returned by the fake."""
-        self._config = config
-
-    def list_enabled(self) -> list[SourceRuntimeConfigData]:
-        """Return the enabled config if applicable."""
-        if self._config.enabled:
-            return [self._config]
-        return []
-
-    def get_by_id(self, runtime_config_id: int) -> SourceRuntimeConfigData:
-        """Return the configured runtime config or raise when it is missing."""
-        if runtime_config_id != self._config.runtime_config_id:
-            raise LookupError(f"Runtime config `{runtime_config_id}` was not found.")
-        return self._config
+from whale.ingest.usecases.roles.pull_role import PullRole
 
 
 class FakeAcquisitionDefinitionPort:
@@ -46,13 +27,13 @@ class FakeAcquisitionDefinitionPort:
         """Store the definition returned by the fake."""
         self._definition = definition
 
-    def get_read_once_definition(
+    def get_config(
         self,
-        runtime_config_id: int,
+        runtime_config: SourceRuntimeConfigData,
     ) -> SourceAcquisitionDefinition:
-        """Return the configured definition or raise when missing."""
-        if self._definition is None or self._definition.runtime_config_id != runtime_config_id:
-            raise LookupError(f"Definition for `{runtime_config_id}` was not found.")
+        """Return acquisition config for the matching runtime config."""
+        if self._definition is None:
+            raise LookupError(f"Definition for `{runtime_config.runtime_config_id}` was not found.")
         return self._definition
 
 
@@ -65,14 +46,14 @@ class FakeSourceAcquisitionPort:
         self._error = error
         self.requests: list[SourceAcquisitionRequest] = []
 
-    def read_once(self, request: SourceAcquisitionRequest) -> list[AcquiredNodeState]:
+    async def read(self, request: SourceAcquisitionRequest) -> list[AcquiredNodeState]:
         """Capture the request and return the configured response."""
         self.requests.append(request)
         if self._error is not None:
             raise self._error
         return list(self._states)
 
-    def subscribe(self, request: object) -> None:
+    async def subscribe(self, request: object) -> None:
         """Unused subscription hook required by the port contract."""
         del request
         raise NotImplementedError
@@ -93,21 +74,19 @@ def _build_runtime_config() -> SourceRuntimeConfigData:
 def _build_definition() -> SourceAcquisitionDefinition:
     """Build one acquisition definition for acquisition-role tests."""
     return SourceAcquisitionDefinition(
-        runtime_config_id=101,
-        source_id="WTG_01",
-        source_name="WTG_01",
-        protocol="opcua",
+        model_id="goldwind_gw121_opcua",
         connection=SourceConnectionData(
             endpoint="opc.tcp://127.0.0.1:4840",
-            security_policy="None",
-            security_mode="None",
-            update_interval_ms=100,
+            params={
+                "security_policy": "None",
+                "security_mode": "None",
+                "namespace_uri": "urn:windfarm:2wtg",
+            },
         ),
         items=[
             AcquisitionItemData(
                 key="TotW",
-                address="nsu=urn:windfarm:2wtg;s=WTG_01.TotW",
-                namespace_uri="urn:windfarm:2wtg",
+                locator="nsu=urn:windfarm:2wtg;s=WTG_01.TotW",
                 display_name="TotW",
             )
         ],
@@ -122,7 +101,6 @@ def _build_states() -> list[AcquiredNodeState]:
             node_key="TotW",
             node_id="nsu=urn:windfarm:2wtg;s=WTG_01.TotW",
             value="1200.0",
-            quality=None,
             observed_at=datetime.now(tz=UTC),
         )
     ]
@@ -130,48 +108,51 @@ def _build_states() -> list[AcquiredNodeState]:
 
 def test_acquire_builds_state_data_from_ports_and_adapter() -> None:
     """Coordinate both query ports and the acquisition port into source-state data."""
+    runtime_config = _build_runtime_config()
     acquisition_port = FakeSourceAcquisitionPort(_build_states())
-    role = AcquisitionRole(
-        runtime_config_port=FakeRuntimeConfigPort(_build_runtime_config()),
+    role = PullRole(
         acquisition_definition_port=FakeAcquisitionDefinitionPort(_build_definition()),
         acquisition_port=acquisition_port,
     )
 
-    data = role.acquire(101)
+    data = asyncio.run(role.acquire(runtime_config))
 
     assert data.runtime_config_id == 101
-    assert data.source_id == "WTG_01"
+    assert data.model_id == "goldwind_gw121_opcua"
     assert data.acquisition_status == "SUCCEEDED"
-    assert data.received_count == 1
+    assert len(data.acquired_states) == 1
+    assert data.acquired_states[0].source_id == "WTG_01"
     assert len(acquisition_port.requests) == 1
-    assert acquisition_port.requests[0].items[0].address.endswith("WTG_01.TotW")
+    assert acquisition_port.requests[0].items[0].locator.endswith("WTG_01.TotW")
 
 
 def test_acquire_returns_failed_and_last_error_when_adapter_raises() -> None:
     """Capture acquisition exceptions as FAILED state instead of raising."""
-    role = AcquisitionRole(
-        runtime_config_port=FakeRuntimeConfigPort(_build_runtime_config()),
+    runtime_config = _build_runtime_config()
+    role = PullRole(
         acquisition_definition_port=FakeAcquisitionDefinitionPort(_build_definition()),
         acquisition_port=FakeSourceAcquisitionPort([], error=TimeoutError("timeout")),
     )
 
-    data = role.acquire(101)
+    data = asyncio.run(role.acquire(runtime_config))
 
     assert data.acquisition_status == "FAILED"
+    assert data.model_id == "goldwind_gw121_opcua"
     assert data.last_error == "timeout"
-    assert data.received_count == 0
+    assert data.acquired_states == []
 
 
 def test_acquire_returns_empty_when_no_states_are_received() -> None:
     """Return EMPTY when the adapter returns an empty state list."""
-    role = AcquisitionRole(
-        runtime_config_port=FakeRuntimeConfigPort(_build_runtime_config()),
+    runtime_config = _build_runtime_config()
+    role = PullRole(
         acquisition_definition_port=FakeAcquisitionDefinitionPort(_build_definition()),
         acquisition_port=FakeSourceAcquisitionPort([]),
     )
 
-    data = role.acquire(101)
+    data = asyncio.run(role.acquire(runtime_config))
 
     assert data.acquisition_status == "EMPTY"
-    assert data.received_count == 0
+    assert data.model_id == "goldwind_gw121_opcua"
+    assert data.acquired_states == []
     assert data.last_error is None

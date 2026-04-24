@@ -1,5 +1,3 @@
-# testing-policy.md
-
 # Testing Policy
 
 This document defines test expectations and validation requirements for code changes in this repository.

@@ -1,4 +1,4 @@
-"""Acquisition request DTO for one read-once source execution."""
+"""Acquisition request DTO for one source read execution."""
 
 from __future__ import annotations
 
@@ -12,9 +12,6 @@ from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionDa
 class SourceAcquisitionRequest:
     """Carry the concrete request payload needed by one acquisition adapter."""
 
-    runtime_config_id: int
     source_id: str
-    source_name: str
-    protocol: str
     connection: SourceConnectionData
     items: list[AcquisitionItemData]

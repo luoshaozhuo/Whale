@@ -1,5 +1,3 @@
-# python-style.md
-
 # Python Style Policy
 
 This document defines Python implementation and code structure expectations for this repository.

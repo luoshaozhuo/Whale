@@ -3,11 +3,8 @@
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
 from whale.ingest.usecases.dtos.acquisition_item_data import AcquisitionItemData
 from whale.ingest.usecases.dtos.acquisition_status import AcquisitionStatus
-from whale.ingest.usecases.dtos.refresh_source_state_command import (
-    RefreshSourceStateCommand,
-)
-from whale.ingest.usecases.dtos.refresh_source_state_result import (
-    RefreshSourceStateResult,
+from whale.ingest.usecases.dtos.pull_source_state_result import (
+    PullSourceStateResult,
 )
 from whale.ingest.usecases.dtos.source_acquisition_definition import (
     SourceAcquisitionDefinition,
@@ -28,8 +25,7 @@ __all__ = [
     "AcquisitionItemData",
     "AcquisitionStatus",
     "AcquiredNodeState",
-    "RefreshSourceStateCommand",
-    "RefreshSourceStateResult",
+    "PullSourceStateResult",
     "SourceAcquisitionDefinition",
     "SourceAcquisitionRequest",
     "SourceConnectionData",

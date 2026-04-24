@@ -8,8 +8,14 @@ from contextlib import AbstractContextManager
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from whale.ingest.framework.persistence.orm.source_runtime_config_orm import (
-    SourceRuntimeConfigORM,
+from whale.ingest.framework.persistence.orm.acquisition_model_orm import (
+    AcquisitionModelORM,
+)
+from whale.ingest.framework.persistence.orm.acquisition_task_orm import (
+    AcquisitionTaskORM,
+)
+from whale.ingest.framework.persistence.orm.device_orm import (
+    DeviceORM,
 )
 from whale.ingest.framework.persistence.session import session_scope
 from whale.ingest.ports.runtime.source_runtime_config_port import (
@@ -33,34 +39,40 @@ class SourceRuntimeConfigRepository(SourceRuntimeConfigPort):
     def list_enabled(self) -> list[SourceRuntimeConfigData]:
         """Return enabled runtime configurations ordered by runtime-config id."""
         with self._session_factory() as session:
-            configs = list(
+            tasks = list(
                 session.scalars(
-                    select(SourceRuntimeConfigORM)
-                    .where(SourceRuntimeConfigORM.enabled.is_(True))
-                    .order_by(SourceRuntimeConfigORM.id)
+                    select(AcquisitionTaskORM)
+                    .where(AcquisitionTaskORM.enabled.is_(True))
+                    .order_by(AcquisitionTaskORM.id)
                 )
             )
 
-        return [self._to_data(config) for config in configs]
-
-    def get_by_id(self, runtime_config_id: int) -> SourceRuntimeConfigData:
-        """Return one runtime configuration or raise when it is missing."""
-        with self._session_factory() as session:
-            config = session.get(SourceRuntimeConfigORM, runtime_config_id)
-
-        if config is None:
-            raise LookupError(f"Runtime config `{runtime_config_id}` was not found.")
-
-        return self._to_data(config)
+            return [self._to_data(session, task) for task in tasks]
 
     @staticmethod
-    def _to_data(config: SourceRuntimeConfigORM) -> SourceRuntimeConfigData:
+    def _to_data(session: Session, task: AcquisitionTaskORM) -> SourceRuntimeConfigData:
         """Map one ORM row into application-facing runtime data."""
+        device = session.get(DeviceORM, task.device_id)
+        if device is None:
+            raise LookupError(f"Device `{task.device_id}` was not found for task `{task.id}`.")
+
+        model = session.scalar(
+            select(AcquisitionModelORM).where(
+                AcquisitionModelORM.model_id == task.model_id,
+                AcquisitionModelORM.model_version == task.model_version,
+            )
+        )
+        if model is None:
+            raise LookupError(
+                "Protocol was not found for "
+                f"model `{task.model_id}` version `{task.model_version}`."
+            )
+
         return SourceRuntimeConfigData(
-            runtime_config_id=int(config.id),
-            source_id=config.source_id,
-            protocol=config.protocol,
-            acquisition_mode=config.acquisition_mode,
-            interval_ms=config.interval_ms,
-            enabled=config.enabled,
+            runtime_config_id=int(task.id),
+            source_id=device.device_code,
+            protocol=model.protocol,
+            acquisition_mode=task.acquisition_mode,
+            interval_ms=task.interval_ms,
+            enabled=task.enabled,
         )

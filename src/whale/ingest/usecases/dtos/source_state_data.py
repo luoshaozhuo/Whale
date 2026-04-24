@@ -1,4 +1,4 @@
-"""Data object for one refresh-source-state execution."""
+"""Data object for one pull-source-state execution."""
 
 from __future__ import annotations
 
@@ -10,14 +10,10 @@ from whale.ingest.usecases.dtos.acquisition_status import AcquisitionStatus
 
 @dataclass(slots=True)
 class SourceStateData:
-    """Carry acquisition and persistence state for one refresh execution."""
+    """Carry acquired source states for one pull execution."""
 
     runtime_config_id: int
-    source_id: str
-    source_name: str
-    protocol: str
     acquisition_status: AcquisitionStatus
+    model_id: str | None = None
     acquired_states: list[AcquiredNodeState] = field(default_factory=list)
-    received_count: int = 0
-    updated_count: int = 0
     last_error: str | None = None

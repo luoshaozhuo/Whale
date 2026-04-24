@@ -1,31 +1,30 @@
-"""State-update role for refresh-source-state use case."""
+"""State-update role for the pull-source-state use case."""
 
 from __future__ import annotations
 
-from whale.ingest.ports.store.source_state_repository_port import (
-    SourceStateRepositoryPort,
+from whale.ingest.ports.store.source_state_store_port import (
+    SourceStateStorePort,
 )
 from whale.ingest.usecases.dtos.source_state_data import SourceStateData
 
 
 class StateUpdateRole:
-    """Persist acquired source states into the local state cache."""
+    """Store acquired source states through the configured sink."""
 
     def __init__(
         self,
-        store_port: SourceStateRepositoryPort,
+        store_port: SourceStateStorePort,
     ) -> None:
-        """Store the repository dependency used for persistence."""
+        """Store the sink dependency used for state updates."""
         self._store_port = store_port
 
-    def apply(self, data: SourceStateData) -> SourceStateData:
-        """Persist acquired states and return the updated source-state data."""
+    def apply(self, data: SourceStateData) -> int:
+        """Store acquired states and return the processed row count."""
         if not data.acquired_states:
-            data.updated_count = 0
-            return data
-
-        data.updated_count = self._store_port.upsert_many(
-            data.source_id,
+            return 0
+        if data.model_id is None:
+            raise ValueError("model_id is required when storing acquired states")
+        return self._store_port.store_many(
+            data.model_id,
             data.acquired_states,
         )
-        return data

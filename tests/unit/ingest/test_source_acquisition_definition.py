@@ -9,35 +9,27 @@ from whale.ingest.usecases.dtos.source_acquisition_definition import (
 from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionData
 
 
-def test_to_request_preserves_definition_fields() -> None:
-    """Convert a definition into a request without dropping fields."""
+def test_definition_preserves_config_fields() -> None:
+    """Expose acquisition config fields without mutating their content."""
     definition = SourceAcquisitionDefinition(
-        runtime_config_id=101,
-        source_id="WTG_01",
-        source_name="WTG_01",
-        protocol="opcua",
+        model_id="goldwind_gw121_opcua",
         connection=SourceConnectionData(
             endpoint="opc.tcp://127.0.0.1:4840",
-            security_policy="None",
-            security_mode="None",
-            update_interval_ms=100,
+            params={
+                "security_policy": "None",
+                "security_mode": "None",
+                "namespace_uri": "urn:windfarm:2wtg",
+            },
         ),
         items=[
             AcquisitionItemData(
                 key="TotW",
-                address="s=WTG_01.TotW",
-                namespace_uri="urn:windfarm:2wtg",
+                locator="s=WTG_01.TotW",
                 display_name="TotW",
             )
         ],
     )
 
-    request = definition.to_request()
-
-    assert request.runtime_config_id == definition.runtime_config_id
-    assert request.source_id == definition.source_id
-    assert request.source_name == definition.source_name
-    assert request.protocol == definition.protocol
-    assert request.connection == definition.connection
-    assert request.items == definition.items
-    assert request.items is not definition.items
+    assert definition.model_id == "goldwind_gw121_opcua"
+    assert definition.connection.endpoint == "opc.tcp://127.0.0.1:4840"
+    assert definition.items[0].key == "TotW"

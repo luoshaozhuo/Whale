@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
 from datetime import UTC, datetime
 
-from asyncua.sync import Client  # type: ignore[import-untyped]
+from asyncua import Client  # type: ignore[import-untyped]
 
 from whale.ingest.ports.source.source_acquisition_port import SourceAcquisitionPort
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
@@ -18,43 +18,74 @@ from whale.ingest.usecases.dtos.source_subscription_request import (
 
 
 class OpcUaSourceAcquisitionAdapter(SourceAcquisitionPort):
-    """Provide the minimal read-once acquisition interface for OPC UA."""
+    """Provide the minimal read acquisition interface for OPC UA."""
 
-    def __init__(self, client_factory: Callable[[str], Client] = Client) -> None:
-        """Store the client factory used to connect to OPC UA endpoints."""
-        self._client_factory = client_factory
-
-    def read_once(self, request: SourceAcquisitionRequest) -> list[AcquiredNodeState]:
+    async def read(self, request: SourceAcquisitionRequest) -> list[AcquiredNodeState]:
         """Return one acquisition batch for the configured source."""
         observed_at = datetime.now(tz=UTC)
+        if request.connection.endpoint is None:
+            raise ValueError("OPC UA acquisition requires a connection endpoint.")
 
-        with self._client_factory(request.connection.endpoint) as client:
-            states: list[AcquiredNodeState] = []
-            for item in request.items:
-                node_id = self._resolve_node_id(client, item.address, item.namespace_uri)
-                states.append(
-                    AcquiredNodeState(
-                        source_id=request.source_id,
-                        node_key=item.key,
-                        node_id=node_id,
-                        value=str(client.get_node(node_id).read_value()),
-                        quality=None,
-                        observed_at=observed_at,
-                    )
-                )
-            return states
+        async with Client(request.connection.endpoint) as client:
+            node_ids = await self._resolve_node_ids(client, request)
+            nodes = [client.get_node(node_id) for node_id in node_ids]
+            values = await client.read_values(nodes)
 
-    def subscribe(self, request: SourceSubscriptionRequest) -> None:
+        return [
+            AcquiredNodeState(
+                source_id=request.source_id,
+                node_key=item.key,
+                node_id=node_id,
+                value=str(value),
+                observed_at=observed_at,
+            )
+            for item, node_id, value in zip(request.items, node_ids, values, strict=True)
+        ]
+
+    async def subscribe(self, request: SourceSubscriptionRequest) -> None:
         """Start subscription-based acquisition for the configured source."""
-        _ = request
-        raise NotImplementedError("OPC UA subscription is not implemented yet.")
+        if request.stop_requested is None:
+            raise ValueError("Subscription request must provide a stop callback.")
+
+        while not request.stop_requested():
+            await asyncio.sleep(0.1)
+
+    async def _resolve_node_ids(
+        self,
+        client: Client,
+        request: SourceAcquisitionRequest,
+    ) -> list[str]:
+        """Resolve all item addresses into concrete OPC UA node ids."""
+        namespace_indexes: dict[str, int] = {}
+        namespace_uri = request.connection.params.get("namespace_uri")
+        node_ids: list[str] = []
+
+        for item in request.items:
+            node_ids.append(
+                await self._resolve_node_id(
+                    client,
+                    item.locator,
+                    namespace_uri if isinstance(namespace_uri, str) else None,
+                    namespace_indexes,
+                )
+            )
+
+        return node_ids
 
     @staticmethod
-    def _resolve_node_id(client: Client, address: str, namespace_uri: str | None) -> str:
+    async def _resolve_node_id(
+        client: Client,
+        address: str,
+        namespace_uri: str | None,
+        namespace_indexes: dict[str, int],
+    ) -> str:
         """Resolve one item address into the concrete node id understood by asyncua."""
         if address.startswith(("ns=", "nsu=")):
             return address
         if namespace_uri is None:
             return address
-        namespace_index = client.get_namespace_index(namespace_uri)
+        namespace_index = namespace_indexes.get(namespace_uri)
+        if namespace_index is None:
+            namespace_index = await client.get_namespace_index(namespace_uri)
+            namespace_indexes[namespace_uri] = namespace_index
         return f"ns={namespace_index};{address}"

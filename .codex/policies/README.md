@@ -1,5 +1,3 @@
-# .codex/policies/README.md
-
 # Repository Policies
 
 This directory contains repository policy documents for the Whale project.

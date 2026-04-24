@@ -36,6 +36,7 @@ class SchedulerSettings:
 
     scheduler_type: str = "blocking"
     timezone: str = "UTC"
+    pull_max_in_flight: int = 8
     jobstore: JobStoreSettings = field(default_factory=JobStoreSettings)
     executors: ExecutorSettings = field(default_factory=ExecutorSettings)
     job_defaults: JobDefaultSettings = field(default_factory=JobDefaultSettings)

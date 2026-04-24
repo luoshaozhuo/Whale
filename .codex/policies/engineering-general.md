@@ -1,5 +1,3 @@
-# engineering-general.md
-
 # Engineering General Policy
 
 This document defines repository-wide engineering constraints that apply to implementation work when relevant.

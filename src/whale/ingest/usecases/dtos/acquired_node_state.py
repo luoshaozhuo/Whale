@@ -14,5 +14,4 @@ class AcquiredNodeState:
     node_key: str
     node_id: str
     value: str
-    quality: str | None
     observed_at: datetime
