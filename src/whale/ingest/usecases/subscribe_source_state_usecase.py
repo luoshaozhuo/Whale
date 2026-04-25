@@ -10,9 +10,7 @@ from whale.ingest.ports.source.source_acquisition_definition_port import (
 from whale.ingest.ports.source.source_acquisition_port_registry import (
     SourceAcquisitionPortRegistry,
 )
-from whale.ingest.ports.store.source_state_store_port import (
-    SourceStateStorePort,
-)
+from whale.ingest.ports.state import SourceStateCachePort
 from whale.ingest.usecases.dtos.source_runtime_config_data import (
     SourceRuntimeConfigData,
 )
@@ -21,18 +19,18 @@ from whale.ingest.usecases.roles.subscribe_role import SubscribeRole
 
 
 class SubscribeSourceStateUseCase:
-    """Start long-running subscriptions for runtime configurations."""
+    """Start long-running subscriptions that refresh the local state cache."""
 
     def __init__(
         self,
         acquisition_definition_port: SourceAcquisitionDefinitionPort,
         acquisition_port_registry: SourceAcquisitionPortRegistry,
-        store_port: SourceStateStorePort,
+        state_cache_port: SourceStateCachePort,
     ) -> None:
-        """Build subscription dependencies for one long-running job."""
+        """Build dependencies for one long-running cache-refresh job."""
         self._acquisition_definition_port = acquisition_definition_port
         self._acquisition_port_registry = acquisition_port_registry
-        self._update_role = StateUpdateRole(store_port=store_port)
+        self._update_role = StateUpdateRole(state_cache_port=state_cache_port)
 
     async def execute(
         self,

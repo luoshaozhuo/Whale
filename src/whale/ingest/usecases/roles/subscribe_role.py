@@ -14,6 +14,9 @@ from whale.ingest.usecases.dtos.acquisition_status import AcquisitionStatus
 from whale.ingest.usecases.dtos.source_acquisition_definition import (
     SourceAcquisitionDefinition,
 )
+from whale.ingest.usecases.dtos.source_acquisition_request import (
+    SourceAcquisitionRequest,
+)
 from whale.ingest.usecases.dtos.source_runtime_config_data import (
     SourceRuntimeConfigData,
 )
@@ -44,12 +47,13 @@ class SubscribeRole:
         runtime_configs: tuple[SourceRuntimeConfigData, ...],
         stop_requested: Callable[[], bool],
     ) -> None:
-        """Start merged subscription acquisition until stopped or failed."""
+        """Start merged subscription acquisition after an initial full read."""
         requests: list[SourceSubscriptionRequest] = []
         for runtime_config in runtime_configs:
             if stop_requested():
                 return
             config = self._acquisition_definition_port.get_config(runtime_config)
+            await self._initialize_state(runtime_config, config)
             requests.append(
                 self._build_request(
                     runtime_config,
@@ -62,6 +66,28 @@ class SubscribeRole:
         async with asyncio.TaskGroup() as task_group:
             for request in requests:
                 task_group.create_task(self._subscribe_request(request))
+
+    async def _initialize_state(
+        self,
+        runtime_config: SourceRuntimeConfigData,
+        config: SourceAcquisitionDefinition,
+    ) -> None:
+        """Read one full initial snapshot before starting the subscription."""
+        acquired_states = await self._acquisition_port.read(
+            self._build_read_request(runtime_config, config)
+        )
+        if not acquired_states:
+            return
+        await asyncio.to_thread(
+            self._state_update_role.apply_for_mode,
+            SourceStateData(
+                runtime_config_id=runtime_config.runtime_config_id,
+                acquisition_status=AcquisitionStatus.SUCCEEDED,
+                model_id=config.model_id,
+                acquired_states=acquired_states,
+            ),
+            runtime_config.acquisition_mode,
+        )
 
     @staticmethod
     def _build_request(
@@ -78,6 +104,18 @@ class SubscribeRole:
             items=list(config.items),
             stop_requested=stop_requested,
             state_received=state_received,
+        )
+
+    @staticmethod
+    def _build_read_request(
+        runtime_config: SourceRuntimeConfigData,
+        config: SourceAcquisitionDefinition,
+    ) -> SourceAcquisitionRequest:
+        """Build one initial read request for subscription startup."""
+        return SourceAcquisitionRequest(
+            source_id=runtime_config.source_id,
+            connection=config.connection,
+            items=list(config.items),
         )
 
     def _build_state_received_handler(

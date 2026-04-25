@@ -26,10 +26,15 @@ from whale.ingest.adapters.source.opcua_source_acquisition_adapter import (
 from whale.ingest.adapters.source.static_source_acquisition_port_registry import (
     StaticSourceAcquisitionPortRegistry,
 )
-from whale.ingest.adapters.store.sqlite_variable_state_repository import (
-    SqliteVariableStateRepository,
+from whale.ingest.adapters.state.redis_source_state_cache import (
+    RedisSourceStateCache,
 )
+from whale.ingest.adapters.state.sqlite_source_state_cache import (
+    SqliteSourceStateCache,
+)
+from whale.ingest.config import CONFIG
 from whale.ingest.framework.persistence.session import dispose_engine
+from whale.ingest.ports.state import SourceStateCachePort
 from whale.ingest.runtime.scheduler import SourceScheduler
 from whale.ingest.runtime.scheduler_settings import SchedulerSettings
 from whale.ingest.usecases.pull_source_state_usecase import (
@@ -53,6 +58,17 @@ def build_scheduler() -> SourceScheduler:
     )
 
 
+def _build_state_cache_port() -> SourceStateCachePort:
+    """Build the configured state-cache adapter for the current environment."""
+    if CONFIG.state_cache_backend == "sqlite":
+        return SqliteSourceStateCache()
+    if CONFIG.state_cache_backend == "redis":
+        return RedisSourceStateCache()
+    raise RuntimeError(
+        "Unsupported state cache backend configured: " f"{CONFIG.state_cache_backend!r}"
+    )
+
+
 def _build_pull_source_state_usecase(settings: SchedulerSettings) -> PullSourceStateUseCase:
     """Build one short-lived pull use case for ONCE or POLLING jobs."""
     return PullSourceStateUseCase(
@@ -60,7 +76,7 @@ def _build_pull_source_state_usecase(settings: SchedulerSettings) -> PullSourceS
         acquisition_port_registry=StaticSourceAcquisitionPortRegistry(
             {"opcua": OpcUaSourceAcquisitionAdapter()}
         ),
-        store_port=SqliteVariableStateRepository(),
+        state_cache_port=_build_state_cache_port(),
         max_in_flight=settings.pull_max_in_flight,
     )
 
@@ -72,7 +88,7 @@ def _build_subscribe_source_state_usecase() -> SubscribeSourceStateUseCase:
         acquisition_port_registry=StaticSourceAcquisitionPortRegistry(
             {"opcua": OpcUaSourceAcquisitionAdapter()}
         ),
-        store_port=SqliteVariableStateRepository(),
+        state_cache_port=_build_state_cache_port(),
     )
 
 

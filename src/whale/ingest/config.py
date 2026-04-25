@@ -7,11 +7,91 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+SUPPORTED_ENVIRONMENTS = frozenset({"test", "development", "production"})
+SUPPORTED_STATE_CACHE_BACKENDS = frozenset({"sqlite", "redis"})
 
 
 def _env_path(name: str, default: str | Path) -> str | Path:
     """Return one configured path with environment override support."""
     return os.environ.get(name, default)
+
+
+def _required_env(name: str) -> str:
+    """Return one required environment variable or raise a clear error."""
+    value = os.environ.get(name)
+    if value is None:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
+def _optional_env(name: str) -> str | None:
+    """Return one optional environment variable.
+
+    Empty strings are treated as missing values.
+    """
+    value = os.environ.get(name)
+    if value == "":
+        return None
+    return value
+
+
+def _optional_env_int(name: str) -> int | None:
+    """Return one optional integer environment variable."""
+    value = _optional_env(name)
+    if value is None:
+        return None
+    return int(value)
+
+
+def _optional_env_bool(name: str) -> bool | None:
+    """Return one optional boolean environment variable."""
+    value = _optional_env(name)
+    if value is None:
+        return None
+    return value.lower() != "false"
+
+
+def _resolve_runtime_environment(value: str | None) -> str:
+    """Resolve the ingest runtime environment.
+
+    Defaults to `development` when unset.
+    """
+    if value in (None, ""):
+        environment = "development"
+    else:
+        environment_text = value
+        assert environment_text is not None
+        environment = environment_text.strip().lower()
+    if environment not in SUPPORTED_ENVIRONMENTS:
+        raise RuntimeError(
+            "Unsupported WHALE_INGEST_ENV value: "
+            f"{value!r}. Expected one of {sorted(SUPPORTED_ENVIRONMENTS)}."
+        )
+    return environment
+
+
+def _default_state_cache_backend(environment: str) -> str:
+    """Return the default state-cache backend for one runtime environment."""
+    return "redis" if environment == "production" else "sqlite"
+
+
+def _resolve_state_cache_backend(
+    environment: str,
+    override: str | None,
+) -> str:
+    """Resolve the state-cache backend with optional explicit override."""
+    if override in (None, ""):
+        backend = _default_state_cache_backend(environment)
+    else:
+        override_text = override
+        assert override_text is not None
+        backend = override_text.strip().lower()
+    if backend not in SUPPORTED_STATE_CACHE_BACKENDS:
+        raise RuntimeError(
+            "Unsupported WHALE_INGEST_STATE_CACHE_BACKEND value: "
+            f"{override!r}. Expected one of {sorted(SUPPORTED_STATE_CACHE_BACKENDS)}."
+        )
+    return backend
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,14 +120,38 @@ class OpcUaConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RedisStateCacheConfig:
+    """Redis latest-state cache configuration for ingest."""
+
+    host: str | None
+    port: int | None
+    db: int | None
+    username: str | None
+    password: str | None
+    hash_key: str | None
+    station_id: str | None
+    decode_responses: bool | None
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     """Top-level ingest configuration."""
 
+    environment: str
+    state_cache_backend: str
     database: DatabaseConfig
     opcua: OpcUaConfig
+    redis_state_cache: RedisStateCacheConfig
 
+
+_RUNTIME_ENVIRONMENT = _resolve_runtime_environment(os.environ.get("WHALE_INGEST_ENV"))
 
 CONFIG = Config(
+    environment=_RUNTIME_ENVIRONMENT,
+    state_cache_backend=_resolve_state_cache_backend(
+        _RUNTIME_ENVIRONMENT,
+        os.environ.get("WHALE_INGEST_STATE_CACHE_BACKEND"),
+    ),
     database=DatabaseConfig(
         drivername="sqlite",  # for postgre, postgresql+psycopg2
         host=None,  # for postgre, localhost
@@ -74,5 +178,15 @@ CONFIG = Config(
                 "tools/opcua_sim/templates/OPCUANodeSet.xml",
             )
         ),
+    ),
+    redis_state_cache=RedisStateCacheConfig(
+        host=_optional_env("WHALE_INGEST_REDIS_HOST"),
+        port=_optional_env_int("WHALE_INGEST_REDIS_PORT"),
+        db=_optional_env_int("WHALE_INGEST_REDIS_DB"),
+        username=_optional_env("WHALE_INGEST_REDIS_USERNAME"),
+        password=_optional_env("WHALE_INGEST_REDIS_PASSWORD"),
+        hash_key=_optional_env("WHALE_INGEST_REDIS_STATE_HASH_KEY"),
+        station_id=_optional_env("WHALE_INGEST_STATION_ID"),
+        decode_responses=_optional_env_bool("WHALE_INGEST_REDIS_DECODE_RESPONSES"),
     ),
 )

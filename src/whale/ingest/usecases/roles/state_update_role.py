@@ -1,23 +1,23 @@
-"""State-update role for the pull-source-state use case."""
+"""State-update role for refreshing the local latest-state cache."""
 
 from __future__ import annotations
 
-from whale.ingest.ports.store.source_state_store_port import (
-    ModeAwareSourceStateStorePort,
-    SourceStateStorePort,
+from whale.ingest.ports.state import (
+    ModeAwareSourceStateCachePort,
+    SourceStateCachePort,
 )
 from whale.ingest.usecases.dtos.source_state_data import SourceStateData
 
 
 class StateUpdateRole:
-    """Store acquired source states through the configured sink."""
+    """Refresh acquired source states through the configured local cache."""
 
     def __init__(
         self,
-        store_port: SourceStateStorePort,
+        state_cache_port: SourceStateCachePort,
     ) -> None:
-        """Store the sink dependency used for state updates."""
-        self._store_port = store_port
+        """Store the cache dependency used for latest-state refresh."""
+        self._state_cache_port = state_cache_port
 
     def apply(self, data: SourceStateData) -> int:
         """Store acquired states and return the processed row count."""
@@ -34,14 +34,14 @@ class StateUpdateRole:
         if data.model_id is None:
             raise ValueError("model_id is required when storing acquired states")
         if acquisition_mode is not None and isinstance(
-            self._store_port, ModeAwareSourceStateStorePort
+            self._state_cache_port, ModeAwareSourceStateCachePort
         ):
-            return self._store_port.store_many_for_mode(
+            return self._state_cache_port.store_many_for_mode(
                 acquisition_mode,
                 data.model_id,
                 data.acquired_states,
             )
-        return self._store_port.store_many(
+        return self._state_cache_port.store_many(
             data.model_id,
             data.acquired_states,
         )

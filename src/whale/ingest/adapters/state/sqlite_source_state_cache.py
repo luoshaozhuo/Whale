@@ -1,39 +1,33 @@
-"""SQLite-backed variable-state repository for ingest."""
+"""SQLite-backed latest-state cache for ingest."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
 
 from whale.ingest.framework.persistence.orm.variable_state_orm import (
     VariableStateORM,
 )
 from whale.ingest.framework.persistence.session import session_scope
-from whale.ingest.ports.store.source_state_store_port import (
-    SourceStateStorePort,
+from whale.ingest.ports.state import (
+    SourceStateCachePort,
+    SourceStateSnapshotReaderPort,
 )
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
+from whale.ingest.usecases.dtos.cached_source_state import CachedSourceState
 
 
-class SqliteVariableStateRepository(SourceStateStorePort):
-    """Persist acquired states into the latest device-variable state cache."""
+class SqliteSourceStateCache(SourceStateCachePort, SourceStateSnapshotReaderPort):
+    """Persist and read the local latest-state cache from SQLite."""
 
     def store_many(
         self,
         model_id: str,
         acquired_states: list[AcquiredNodeState],
     ) -> int:
-        """Upsert the provided acquired states and return processed row count.
-
-        Args:
-            model_id: Business acquisition-model identifier for the acquired observations.
-            acquired_states: Latest-state rows to insert or update.
-
-        Returns:
-            Number of latest-state rows processed by the SQLite upsert
-            statement.
-        """
+        """Upsert latest-state rows for the provided acquired states."""
         received_at = datetime.now(tz=UTC)
         rows = [
             {
@@ -66,3 +60,30 @@ class SqliteVariableStateRepository(SourceStateStorePort):
             session.commit()
 
         return len(rows)
+
+    def read_snapshot(self) -> list[CachedSourceState]:
+        """Return the full current latest-state snapshot from SQLite."""
+        with session_scope() as session:
+            rows = list(
+                session.scalars(
+                    select(VariableStateORM).order_by(
+                        VariableStateORM.device_code,
+                        VariableStateORM.model_id,
+                        VariableStateORM.variable_key,
+                    )
+                )
+            )
+
+        return [
+            CachedSourceState(
+                id=row.id,
+                device_code=row.device_code,
+                model_id=row.model_id,
+                variable_key=row.variable_key,
+                value=row.value,
+                source_observed_at=row.source_observed_at,
+                received_at=row.received_at,
+                updated_at=row.updated_at,
+            )
+            for row in rows
+        ]

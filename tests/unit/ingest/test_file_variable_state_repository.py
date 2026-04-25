@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from whale.ingest.adapters.store.file_variable_state_repository import (
-    FileVariableStateRepository,
+from whale.ingest.adapters.state.file_source_state_cache import (
+    FileSourceStateCache,
 )
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
 
@@ -43,7 +43,7 @@ def test_store_many_for_mode_writes_incremental_records_to_three_files(
     tmp_path: Path,
 ) -> None:
     """Append acquired states to read, polling, and subscription capture files."""
-    repository = FileVariableStateRepository(tmp_path)
+    repository = FileSourceStateCache(tmp_path)
     states = _build_states()
 
     assert repository.store_many_for_mode("ONCE", "model_1", states) == 2
@@ -68,7 +68,7 @@ def test_store_many_for_mode_writes_incremental_records_to_three_files(
 
 def test_store_many_defaults_to_read_results_file(tmp_path: Path) -> None:
     """Write default store calls into the read-results capture file."""
-    repository = FileVariableStateRepository(tmp_path)
+    repository = FileSourceStateCache(tmp_path)
 
     assert repository.store_many("model_1", _build_states()) == 2
 
@@ -84,7 +84,7 @@ def test_test_side_cleanup_can_delete_old_capture_files_before_new_writes(
     stale_path.write_text("stale,data\n", encoding="utf-8")
     stale_path.unlink()
 
-    repository = FileVariableStateRepository(tmp_path)
+    repository = FileSourceStateCache(tmp_path)
 
     assert repository.store_many("model_1", _build_states()) == 2
     assert repository.store_many("model_1", _build_states()) == 2
@@ -101,7 +101,7 @@ def test_test_side_cleanup_can_delete_old_capture_files_before_new_writes(
 
 def test_store_many_for_mode_rejects_unknown_mode(tmp_path: Path) -> None:
     """Reject unsupported capture modes to keep output routing explicit."""
-    repository = FileVariableStateRepository(tmp_path)
+    repository = FileSourceStateCache(tmp_path)
 
     with pytest.raises(ValueError, match="Unsupported acquisition mode"):
         repository.store_many_for_mode("UNKNOWN", "model_1", _build_states())

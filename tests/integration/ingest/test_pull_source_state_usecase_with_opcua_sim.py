@@ -20,8 +20,8 @@ from whale.ingest.adapters.source.opcua_source_acquisition_adapter import (
 from whale.ingest.adapters.source.static_source_acquisition_port_registry import (
     StaticSourceAcquisitionPortRegistry,
 )
-from whale.ingest.adapters.store.file_variable_state_repository import (
-    FileVariableStateRepository,
+from whale.ingest.adapters.state.file_source_state_cache import (
+    FileSourceStateCache,
 )
 from whale.ingest.usecases.dtos.acquisition_item_data import AcquisitionItemData
 from whale.ingest.usecases.dtos.acquisition_status import AcquisitionStatus
@@ -149,7 +149,7 @@ def _build_definition(endpoint: str) -> SourceAcquisitionDefinition:
 
 def _build_pull_use_case(
     definition: SourceAcquisitionDefinition,
-    store_port: FileVariableStateRepository,
+    state_cache_port: FileSourceStateCache,
 ) -> PullSourceStateUseCase:
     """Build the pull use case with the real OPC UA adapter and file store."""
     return PullSourceStateUseCase(
@@ -157,13 +157,13 @@ def _build_pull_use_case(
         acquisition_port_registry=StaticSourceAcquisitionPortRegistry(
             {"opcua": OpcUaSourceAcquisitionAdapter()}
         ),
-        store_port=store_port,
+        state_cache_port=state_cache_port,
     )
 
 
 def _build_subscribe_use_case(
     definition: SourceAcquisitionDefinition,
-    store_port: FileVariableStateRepository,
+    state_cache_port: FileSourceStateCache,
 ) -> SubscribeSourceStateUseCase:
     """Build the subscribe use case with the real OPC UA adapter and file store."""
     return SubscribeSourceStateUseCase(
@@ -171,16 +171,16 @@ def _build_subscribe_use_case(
         acquisition_port_registry=StaticSourceAcquisitionPortRegistry(
             {"opcua": PollingSubscriptionSourceAcquisitionAdapter()}
         ),
-        store_port=store_port,
+        state_cache_port=state_cache_port,
     )
 
 
-def _build_file_store(output_path: Path) -> FileVariableStateRepository:
+def _build_file_store(output_path: Path) -> FileSourceStateCache:
     """Build the file-backed store and clear the current test output file."""
     TEST_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
         output_path.unlink()
-    return FileVariableStateRepository(TEST_OUTPUT_DIR)
+    return FileSourceStateCache(TEST_OUTPUT_DIR)
 
 
 def _read_rows(output_path: Path) -> list[dict[str, str]]:

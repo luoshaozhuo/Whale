@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from whale.ingest.adapters.store.file_variable_state_repository import (
-    FileVariableStateRepository,
+from whale.ingest.adapters.state.file_source_state_cache import (
+    FileSourceStateCache,
 )
 from whale.ingest.ports.source.source_acquisition_port import SourceAcquisitionPort
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
@@ -85,8 +85,8 @@ class FakeSourceAcquisitionPortRegistry:
             raise ValueError(f"Unsupported acquisition protocol: {protocol}") from exc
 
 
-class FakeSourceStateStorePort:
-    """Fake source-state store for use-case tests."""
+class FakeSourceStateCachePort:
+    """Fake source-state cache for use-case tests."""
 
     def __init__(self, updated_count: int = 0) -> None:
         """Store the count returned from `store_many`."""
@@ -250,13 +250,13 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
 def test_execute_returns_failed_when_definition_is_missing() -> None:
     """Return FAILED when the acquisition definition cannot be built."""
     runtime_config = _build_runtime_config()
-    store_port = FakeSourceStateStorePort(updated_count=1)
+    state_cache_port = FakeSourceStateCachePort(updated_count=1)
     use_case = PullSourceStateUseCase(
         acquisition_definition_port=FakeAcquisitionDefinitionPort(None),
         acquisition_port_registry=FakeSourceAcquisitionPortRegistry(
             {"opcua": FakeSourceAcquisitionPort(_build_states())}
         ),
-        store_port=store_port,
+        state_cache_port=state_cache_port,
     )
 
     result = asyncio.run(use_case.execute([runtime_config]))[0]
@@ -286,7 +286,7 @@ def test_execute_routes_pull_results_to_mode_specific_capture_file(
         acquisition_port_registry=FakeSourceAcquisitionPortRegistry(
             {"opcua": FakeSourceAcquisitionPort(_build_states())}
         ),
-        store_port=FileVariableStateRepository(tmp_path),
+        state_cache_port=FileSourceStateCache(tmp_path),
     )
 
     window_started_at = datetime.now(tz=UTC)
@@ -309,11 +309,11 @@ def test_execute_returns_succeeded_and_persists_states() -> None:
     runtime_config = _build_runtime_config()
     states = _build_states()
     acquisition_port = FakeSourceAcquisitionPort(states)
-    store_port = FakeSourceStateStorePort(updated_count=1)
+    state_cache_port = FakeSourceStateCachePort(updated_count=1)
     use_case = PullSourceStateUseCase(
         acquisition_definition_port=FakeAcquisitionDefinitionPort(_build_definition()),
         acquisition_port_registry=FakeSourceAcquisitionPortRegistry({"opcua": acquisition_port}),
-        store_port=store_port,
+        state_cache_port=state_cache_port,
     )
 
     window_started_at = datetime.now(tz=UTC)
@@ -327,20 +327,20 @@ def test_execute_returns_succeeded_and_persists_states() -> None:
         result.started_at, result.ended_at, window_started_at, window_ended_at
     )
     assert len(acquisition_port.requests) == 1
-    assert store_port.calls == [("goldwind_gw121_opcua", states)]
+    assert state_cache_port.calls == [("goldwind_gw121_opcua", states)]
     assert result.status is AcquisitionStatus.SUCCEEDED
 
 
 def test_execute_returns_empty_when_acquisition_has_no_results() -> None:
     """Return EMPTY without persisting any state rows."""
     runtime_config = _build_runtime_config()
-    store_port = FakeSourceStateStorePort(updated_count=99)
+    state_cache_port = FakeSourceStateCachePort(updated_count=99)
     use_case = PullSourceStateUseCase(
         acquisition_definition_port=FakeAcquisitionDefinitionPort(_build_definition()),
         acquisition_port_registry=FakeSourceAcquisitionPortRegistry(
             {"opcua": FakeSourceAcquisitionPort([])}
         ),
-        store_port=store_port,
+        state_cache_port=state_cache_port,
     )
 
     window_started_at = datetime.now(tz=UTC)
@@ -352,20 +352,20 @@ def test_execute_returns_empty_when_acquisition_has_no_results() -> None:
     _assert_result_execution_window(
         result.started_at, result.ended_at, window_started_at, window_ended_at
     )
-    assert store_port.calls == []
+    assert state_cache_port.calls == []
     assert result.status is AcquisitionStatus.EMPTY
 
 
 def test_execute_returns_failed_when_acquisition_raises() -> None:
     """Return FAILED instead of bubbling one acquisition exception."""
     runtime_config = _build_runtime_config()
-    store_port = FakeSourceStateStorePort(updated_count=1)
+    state_cache_port = FakeSourceStateCachePort(updated_count=1)
     use_case = PullSourceStateUseCase(
         acquisition_definition_port=FakeAcquisitionDefinitionPort(_build_definition()),
         acquisition_port_registry=FakeSourceAcquisitionPortRegistry(
             {"opcua": FakeSourceAcquisitionPort([], error=ConnectionError("boom"))}
         ),
-        store_port=store_port,
+        state_cache_port=state_cache_port,
     )
 
     window_started_at = datetime.now(tz=UTC)
@@ -378,7 +378,7 @@ def test_execute_returns_failed_when_acquisition_raises() -> None:
     _assert_result_execution_window(
         result.started_at, result.ended_at, window_started_at, window_ended_at
     )
-    assert store_port.calls == []
+    assert state_cache_port.calls == []
     assert result.status is AcquisitionStatus.FAILED
 
 
@@ -395,7 +395,7 @@ def test_execute_many_pulls_runtime_configs_concurrently() -> None:
             }
         ),
         acquisition_port_registry=FakeSourceAcquisitionPortRegistry({"opcua": acquisition_port}),
-        store_port=FakeSourceStateStorePort(updated_count=2),
+        state_cache_port=FakeSourceStateCachePort(updated_count=2),
         max_in_flight=2,
     )
 

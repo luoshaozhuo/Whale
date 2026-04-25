@@ -1,0 +1,81 @@
+"""Kafka publisher for ingest state snapshot messages."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Protocol, cast
+
+from whale.ingest.ports.message import MessagePublisherPort
+from whale.ingest.runtime.message_pipeline_settings import KafkaMessageSettings
+from whale.ingest.usecases.dtos.message_publish_result import MessagePublishResult
+from whale.ingest.usecases.dtos.state_snapshot_message import StateSnapshotMessage
+
+
+class KafkaSendFuture(Protocol):
+    """Minimal send future contract used by the Kafka publisher."""
+
+    def get(self, timeout: float | None = None) -> object:
+        """Wait for the published message result."""
+
+
+class KafkaProducerClient(Protocol):
+    """Minimal Kafka producer contract used by the publisher."""
+
+    def send(
+        self,
+        topic: str,
+        key: bytes,
+        value: bytes,
+    ) -> KafkaSendFuture:
+        """Send one message to Kafka."""
+
+    def flush(self) -> None:
+        """Flush producer buffers."""
+
+
+class KafkaMessagePublisher(MessagePublisherPort):
+    """Publish snapshot messages into one Kafka topic."""
+
+    def __init__(
+        self,
+        settings: KafkaMessageSettings,
+        producer: KafkaProducerClient | None = None,
+    ) -> None:
+        """Store Kafka settings and an optional injected producer."""
+        self._settings = settings
+        self._producer = producer or self._build_producer(settings)
+
+    def publish_snapshot(self, message: StateSnapshotMessage) -> MessagePublishResult:
+        """Publish one snapshot message into Kafka."""
+        payload = message.to_json().encode("utf-8")
+        future = self._producer.send(
+            self._settings.topic,
+            key=message.snapshot_id.encode("utf-8"),
+            value=payload,
+        )
+        future.get(timeout=self._settings.ack_timeout_seconds)
+        self._producer.flush()
+        return MessagePublishResult(
+            pipeline_name="kafka",
+            success=True,
+            message_id=message.message_id,
+            message_count=1,
+            published_at=datetime.now(tz=UTC),
+        )
+
+    @staticmethod
+    def _build_producer(settings: KafkaMessageSettings) -> KafkaProducerClient:
+        """Build one real Kafka producer lazily."""
+        try:
+            from kafka import KafkaProducer  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "Kafka publishing requires the `kafka-python` package to be installed."
+            ) from exc
+
+        return cast(
+            KafkaProducerClient,
+            KafkaProducer(
+                bootstrap_servers=list(settings.bootstrap_servers),
+            ),
+        )

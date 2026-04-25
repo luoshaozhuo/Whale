@@ -8,14 +8,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
 
-from whale.ingest.adapters.store.file_variable_state_repository import (
-    FileVariableStateRepository,
+from whale.ingest.adapters.state.file_source_state_cache import (
+    FileSourceStateCache,
 )
 from whale.ingest.ports.source.source_acquisition_port import SourceAcquisitionPort
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
 from whale.ingest.usecases.dtos.acquisition_item_data import AcquisitionItemData
 from whale.ingest.usecases.dtos.source_acquisition_definition import (
     SourceAcquisitionDefinition,
+)
+from whale.ingest.usecases.dtos.source_acquisition_request import (
+    SourceAcquisitionRequest,
 )
 from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionData
 from whale.ingest.usecases.dtos.source_runtime_config_data import (
@@ -45,20 +48,29 @@ class FakeAcquisitionDefinitionPort:
 
 
 class ConcurrentFakeSourceAcquisitionPort:
-    """Capture subscription requests and require concurrent startup."""
+    """Capture initial reads and subscription requests for startup ordering tests."""
 
     def __init__(self) -> None:
         """Initialize captured requests and the startup barrier."""
         self.requests: list[SourceSubscriptionRequest] = []
+        self.read_requests: list[SourceAcquisitionRequest] = []
         self._release = asyncio.Event()
 
-    async def read(self, request: object) -> list[AcquiredNodeState]:
-        """Unused pull hook required by the acquisition-port contract."""
-        del request
-        raise NotImplementedError
+    async def read(self, request: SourceAcquisitionRequest) -> list[AcquiredNodeState]:
+        """Capture the initial full read and return one starting value."""
+        self.read_requests.append(request)
+        return [
+            AcquiredNodeState(
+                source_id=request.source_id,
+                node_key=request.items[0].key,
+                value="41.0",
+                observed_at=datetime.now(tz=UTC),
+            )
+        ]
 
     async def subscribe(self, request: SourceSubscriptionRequest) -> None:
         """Capture the request, wait for all subscriptions, then emit one state."""
+        assert len(self.read_requests) == 2
         self.requests.append(request)
         if len(self.requests) >= 2:
             self._release.set()
@@ -89,8 +101,8 @@ class FakeSourceAcquisitionPortRegistry:
         return self._ports_by_protocol[protocol]
 
 
-class FakeSourceStateStorePort:
-    """Capture stored source-state batches."""
+class FakeSourceStateCachePort:
+    """Capture latest-state refresh batches."""
 
     def __init__(self) -> None:
         """Initialize one empty call list."""
@@ -139,13 +151,13 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
 
 
 def test_execute_starts_all_source_subscriptions_and_stores_updates() -> None:
-    """Start one subscription per runtime config and persist incoming updates."""
+    """Read once before subscribe, then persist both initial and incremental updates."""
     runtime_configs = (
         _build_runtime_config(101, "WTG_01"),
         _build_runtime_config(102, "WTG_02"),
     )
     acquisition_port = ConcurrentFakeSourceAcquisitionPort()
-    store_port = FakeSourceStateStorePort()
+    state_cache_port = FakeSourceStateCachePort()
     use_case = SubscribeSourceStateUseCase(
         acquisition_definition_port=FakeAcquisitionDefinitionPort(
             {
@@ -154,20 +166,34 @@ def test_execute_starts_all_source_subscriptions_and_stores_updates() -> None:
             }
         ),
         acquisition_port_registry=FakeSourceAcquisitionPortRegistry({"opcua": acquisition_port}),
-        store_port=store_port,
+        state_cache_port=state_cache_port,
     )
 
     asyncio.run(use_case.execute(runtime_configs=runtime_configs, stop_event=Event()))
 
+    assert [request.source_id for request in acquisition_port.read_requests] == [
+        "WTG_01",
+        "WTG_02",
+    ]
     assert [request.source_id for request in acquisition_port.requests] == ["WTG_01", "WTG_02"]
-    assert [model_id for model_id, _ in store_port.calls] == ["model_1", "model_2"]
-    assert [states[0].source_id for _, states in store_port.calls] == ["WTG_01", "WTG_02"]
+    assert [model_id for model_id, _ in state_cache_port.calls] == [
+        "model_1",
+        "model_2",
+        "model_1",
+        "model_2",
+    ]
+    assert [states[0].value for _, states in state_cache_port.calls] == [
+        "41.0",
+        "41.0",
+        "42.0",
+        "42.0",
+    ]
 
 
 def test_execute_routes_subscription_results_to_subscription_capture_file(
     tmp_path: Path,
 ) -> None:
-    """Write subscription updates into the dedicated subscription capture file."""
+    """Write initial reads and later subscription updates into the capture file."""
     runtime_configs = (
         _build_runtime_config(101, "WTG_01"),
         _build_runtime_config(102, "WTG_02"),
@@ -181,12 +207,22 @@ def test_execute_routes_subscription_results_to_subscription_capture_file(
             }
         ),
         acquisition_port_registry=FakeSourceAcquisitionPortRegistry({"opcua": acquisition_port}),
-        store_port=FileVariableStateRepository(tmp_path),
+        state_cache_port=FileSourceStateCache(tmp_path),
     )
 
     asyncio.run(use_case.execute(runtime_configs=runtime_configs, stop_event=Event()))
 
     records = _read_csv_rows(tmp_path / "subscription-results.csv")
-    assert [record["device_code"] for record in records] == ["WTG_01", "WTG_02"]
-    assert [record["model_id"] for record in records] == ["model_1", "model_2"]
-    assert [record["variable_key"] for record in records] == ["TotW", "TotW"]
+    assert [record["device_code"] for record in records] == [
+        "WTG_01",
+        "WTG_02",
+        "WTG_01",
+        "WTG_02",
+    ]
+    assert [record["model_id"] for record in records] == [
+        "model_1",
+        "model_2",
+        "model_1",
+        "model_2",
+    ]
+    assert [record["value"] for record in records] == ["41.0", "41.0", "42.0", "42.0"]

@@ -1,4 +1,4 @@
-"""File-backed variable-state repository for ingest testing."""
+"""Test-only file-backed latest-state cache for ingest."""
 
 from __future__ import annotations
 
@@ -7,9 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 
-from whale.ingest.ports.store.source_state_store_port import (
-    ModeAwareSourceStateStorePort,
-)
+from whale.ingest.ports.state import ModeAwareSourceStateCachePort
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
 
 READ_MODE = "ONCE"
@@ -17,11 +15,11 @@ POLLING_MODE = "POLLING"
 SUBSCRIPTION_MODE = "SUBSCRIPTION"
 
 
-class FileVariableStateRepository(ModeAwareSourceStateStorePort):
-    """Append acquired states into mode-specific CSV files for tests."""
+class FileSourceStateCache(ModeAwareSourceStateCachePort):
+    """Append latest-state refresh results into CSV files for tests only."""
 
     def __init__(self, output_dir: Path) -> None:
-        """Create one file-backed repository rooted at the given directory."""
+        """Create one test-only file-backed cache rooted at the given directory."""
         self._output_dir = output_dir
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._lock = Lock()
@@ -93,7 +91,8 @@ class FileVariableStateRepository(ModeAwareSourceStateStorePort):
                 f"Unsupported acquisition mode for file capture: {acquisition_mode}"
             ) from exc
 
-    def _read_next_id(self, output_path: Path) -> int:
+    @staticmethod
+    def _read_next_id(output_path: Path) -> int:
         """Return the next surrogate identifier for the target CSV file."""
         with output_path.open("r", encoding="utf-8", newline="") as input_file:
             rows = list(csv.DictReader(input_file))

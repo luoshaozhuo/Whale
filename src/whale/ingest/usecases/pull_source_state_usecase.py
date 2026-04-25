@@ -11,9 +11,7 @@ from whale.ingest.ports.source.source_acquisition_definition_port import (
 from whale.ingest.ports.source.source_acquisition_port_registry import (
     SourceAcquisitionPortRegistry,
 )
-from whale.ingest.ports.store.source_state_store_port import (
-    SourceStateStorePort,
-)
+from whale.ingest.ports.state import SourceStateCachePort
 from whale.ingest.usecases.dtos.acquisition_status import AcquisitionStatus
 from whale.ingest.usecases.dtos.pull_source_state_result import (
     PullSourceStateResult,
@@ -26,13 +24,13 @@ from whale.ingest.usecases.roles.state_update_role import StateUpdateRole
 
 
 class PullSourceStateUseCase:
-    """Pull source states and update the local cache."""
+    """Pull source states and refresh the local latest-state cache."""
 
     def __init__(
         self,
         acquisition_definition_port: SourceAcquisitionDefinitionPort,
         acquisition_port_registry: SourceAcquisitionPortRegistry,
-        store_port: SourceStateStorePort,
+        state_cache_port: SourceStateCachePort,
         max_in_flight: int = 8,
     ) -> None:
         """Store use-case dependencies.
@@ -41,14 +39,14 @@ class PullSourceStateUseCase:
             acquisition_definition_port: Port used to build acquisition definitions.
             acquisition_port_registry: Protocol-to-adapter registry used to execute source
                 acquisition.
-            store_port: Port used to persist acquired source states.
+            state_cache_port: Port used to refresh the local latest-state cache.
             max_in_flight: Maximum number of source pulls allowed concurrently.
         """
         if max_in_flight <= 0:
             raise ValueError("max_in_flight must be greater than 0")
         self._acquisition_definition_port = acquisition_definition_port
         self._acquisition_port_registry = acquisition_port_registry
-        self._update_role = StateUpdateRole(store_port=store_port)
+        self._update_role = StateUpdateRole(state_cache_port=state_cache_port)
         self._max_in_flight = max_in_flight
 
     async def execute(
