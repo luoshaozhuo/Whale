@@ -45,6 +45,7 @@ logs/
 .coverage
 .tox/
 .pytest_cache/
+/tests/tmp/
 
 # Environment variables
 .env

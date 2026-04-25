@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, Text, func
+from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from whale.ingest.framework.persistence.base import Base
@@ -14,27 +14,37 @@ class VariableStateORM(Base):
     """Persist the latest cached state for one device variable."""
 
     __tablename__ = "variable_state"
-    __table_args__ = ({"comment": "Latest cached variable state"},)
+    __table_args__ = (
+        UniqueConstraint(
+            "device_code",
+            "model_id",
+            "variable_key",
+            name="uq_variable_state_device_model_variable",
+        ),
+        {"comment": "Latest cached variable state"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+        comment="Surrogate row identifier",
+    )
 
     device_code: Mapped[str] = mapped_column(
         String(255),
-        primary_key=True,
+        nullable=False,
         comment="Business device code",
     )
     model_id: Mapped[str] = mapped_column(
         String(255),
-        primary_key=True,
+        nullable=False,
         comment="Business acquisition-model identifier",
     )
     variable_key: Mapped[str] = mapped_column(
         String(255),
-        primary_key=True,
-        comment="Logical variable key within the acquisition model",
-    )
-    node_id: Mapped[str] = mapped_column(
-        String(255),
         nullable=False,
-        comment="Concrete protocol node address",
+        comment="Logical variable key within the acquisition model",
     )
     value: Mapped[str] = mapped_column(
         Text,

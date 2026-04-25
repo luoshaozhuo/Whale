@@ -40,7 +40,6 @@ class SqliteVariableStateRepository(SourceStateStorePort):
                 "device_code": state.source_id,
                 "model_id": model_id,
                 "variable_key": state.node_key,
-                "node_id": state.node_id,
                 "value": state.value,
                 "source_observed_at": state.observed_at,
                 "received_at": received_at,
@@ -57,7 +56,6 @@ class SqliteVariableStateRepository(SourceStateStorePort):
             upsert_statement = statement.on_conflict_do_update(
                 index_elements=["device_code", "model_id", "variable_key"],
                 set_={
-                    "node_id": statement.excluded.node_id,
                     "value": statement.excluded.value,
                     "source_observed_at": statement.excluded.source_observed_at,
                     "received_at": statement.excluded.received_at,

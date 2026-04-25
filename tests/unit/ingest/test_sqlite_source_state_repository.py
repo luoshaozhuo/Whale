@@ -46,7 +46,6 @@ def test_store_many_updates_one_state_row_per_device_model_variable() -> None:
                 AcquiredNodeState(
                     source_id="WTG_01",
                     node_key="TotW",
-                    node_id="ns=2;s=WTG_01.TotW",
                     value="1200.0",
                     observed_at=first_observed_at,
                 )
@@ -58,7 +57,6 @@ def test_store_many_updates_one_state_row_per_device_model_variable() -> None:
                 AcquiredNodeState(
                     source_id="WTG_01",
                     node_key="TotW",
-                    node_id="ns=2;s=WTG_01.TotW",
                     value="1250.0",
                     observed_at=second_observed_at,
                 )
@@ -78,6 +76,7 @@ def test_store_many_updates_one_state_row_per_device_model_variable() -> None:
         assert processed_first == 1
         assert processed_second == 1
         assert len(rows) == 1
+        assert rows[0].id == 1
         assert rows[0].device_code == "WTG_01"
         assert rows[0].model_id == "goldwind_gw121_opcua"
         assert rows[0].variable_key == "TotW"

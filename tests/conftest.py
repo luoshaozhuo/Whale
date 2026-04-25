@@ -1,8 +1,7 @@
-"""Shared pytest fixtures."""
+"""Shared pytest fixtures for current ingest and OPC UA simulator tests."""
 
 from __future__ import annotations
 
-import json
 import socket
 import sys
 from pathlib import Path
@@ -19,116 +18,26 @@ if str(SRC_ROOT) not in sys.path:
 
 from tools.opcua_sim.fleet_runtime import OpcUaFleetRuntime  # noqa: E402
 from tools.opcua_sim.server_runtime import OpcUaServerRuntime, load_server_config  # noqa: E402
-from whale.models import PointMeta  # noqa: E402
-from whale.scl_registry import build_registry_maps, parse_scl_registry  # noqa: E402
 
 
 @pytest.fixture()
-def scenario1_fixture_dir() -> Path:
-    """Return the directory that stores shared scenario1 fixtures.
-
-    Returns:
-        Fixture directory used by scenario1 tests.
-    """
-    return Path(__file__).parent / "fixtures" / "scenario1"
-
-
-@pytest.fixture()
-def sample_scl_path(scenario1_fixture_dir: Path) -> Path:
-    """Return the sample SCL registry path for scenario1 tests.
-
-    Args:
-        scenario1_fixture_dir: Base fixture directory for scenario1.
-
-    Returns:
-        Path to the sample SCL file.
-    """
-    return scenario1_fixture_dir / "sample_scl.xml"
-
-
-@pytest.fixture()
-def sample_power_curve_path(scenario1_fixture_dir: Path) -> Path:
-    """Return the sample power-curve CSV path for scenario1 tests.
-
-    Args:
-        scenario1_fixture_dir: Base fixture directory for scenario1.
-
-    Returns:
-        Path to the sample power-curve CSV file.
-    """
-    return scenario1_fixture_dir / "sample_power_curve.csv"
-
-
-@pytest.fixture()
-def sample_nodeset_path(scenario1_fixture_dir: Path) -> str:
+def sample_nodeset_path() -> str:
     """Return the standard OPC UA NodeSet path for simulator tests.
-
-    Args:
-        scenario1_fixture_dir: Base fixture directory for scenario1.
 
     Returns:
         String path to the NodeSet fixture.
     """
-    _ = scenario1_fixture_dir
     return str(OPCUA_SIM_TEMPLATE_DIR / "OPCUANodeSet.xml")
 
 
 @pytest.fixture()
-def sample_opcua_connections_path(scenario1_fixture_dir: Path) -> str:
+def sample_opcua_connections_path() -> str:
     """Return the sample OPC UA connection config path for simulator tests.
-
-    Args:
-        scenario1_fixture_dir: Base fixture directory for scenario1.
 
     Returns:
         String path to the connection YAML fixture.
     """
-    _ = scenario1_fixture_dir
     return str(OPCUA_SIM_TEMPLATE_DIR / "OPCUA_client_connections.yaml")
-
-
-@pytest.fixture()
-def sample_raw_payloads(scenario1_fixture_dir: Path) -> list[dict[str, object]]:
-    """Load sample raw OPC UA payloads for scenario1 tests.
-
-    Args:
-        scenario1_fixture_dir: Base fixture directory for scenario1.
-
-    Returns:
-        Parsed mock raw batches loaded from the fixture JSON file.
-    """
-    return cast(
-        list[dict[str, object]],
-        json.loads((scenario1_fixture_dir / "sample_raw_batches.json").read_text(encoding="utf-8")),
-    )
-
-
-@pytest.fixture()
-def scenario1_registry(sample_scl_path: Path) -> list[PointMeta]:
-    """Load and parse the sample scenario1 registry.
-
-    Args:
-        sample_scl_path: Fixture path for the minimal SCL file.
-
-    Returns:
-        Parsed point metadata used by scenario1 tests.
-    """
-    return parse_scl_registry(sample_scl_path)
-
-
-@pytest.fixture()
-def scenario1_registry_maps(
-    scenario1_registry: list[PointMeta],
-) -> tuple[dict[str, PointMeta], dict[str, PointMeta]]:
-    """Build scenario1 registry lookup maps for tests.
-
-    Args:
-        scenario1_registry: Parsed point metadata fixture.
-
-    Returns:
-        Lookup tables keyed by OPC UA node id and internal point code.
-    """
-    return build_registry_maps(scenario1_registry)
 
 
 @pytest.fixture()

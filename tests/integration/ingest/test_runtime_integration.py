@@ -10,6 +10,7 @@ import subprocess
 import sys
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
@@ -45,37 +46,37 @@ def _seed_runtime_connection(
 ) -> int:
     """Insert one device, acquisition model and acquisition task."""
     with sqlite3.connect(database_path) as connection:
+        parsed_endpoint = urlsplit(endpoint)
         connection.execute(
             """
             INSERT INTO substation
-            (name, enabled)
-            VALUES (?, ?)
+            (name)
+            VALUES (?)
             """,
-            ("S1", 1),
+            ("S1",),
         )
         substation_id = int(connection.execute("SELECT last_insert_rowid()").fetchone()[0])
         connection.execute(
             """
             INSERT INTO device
-            (substation_id, device_code, device_model, line_number, enabled)
-            VALUES (?, ?, ?, ?, ?)
+            (substation_id, device_code, device_model, line_number)
+            VALUES (?, ?, ?, ?)
             """,
             (
                 substation_id,
                 source_id,
                 "WTG",
                 "L1",
-                1,
             ),
         )
         device_id = int(connection.execute("SELECT last_insert_rowid()").fetchone()[0])
         connection.execute(
             """
             INSERT INTO acquisition_model
-            (model_id, model_version, protocol, model_params)
-            VALUES (?, ?, ?, ?)
+            (model_id, model_version)
+            VALUES (?, ?)
             """,
-            ("WTG_OPCUA_DEMO", "v1", "opcua", json.dumps({"namespace_uri": "urn:windfarm:2wtg"})),
+            ("WTG_OPCUA_DEMO", "v1"),
         )
         model_id = int(connection.execute("SELECT last_insert_rowid()").fetchone()[0])
         connection.execute(
@@ -85,22 +86,32 @@ def _seed_runtime_connection(
                 device_id,
                 model_id,
                 model_version,
+                protocol,
                 acquisition_mode,
                 interval_ms,
-                endpoint,
+                host,
+                port,
                 connection_params,
                 enabled
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 device_id,
                 "WTG_OPCUA_DEMO",
                 "v1",
+                "opcua",
                 acquisition_mode,
                 0,
-                endpoint,
-                json.dumps({"security_policy": "None", "security_mode": "None"}),
+                parsed_endpoint.hostname,
+                parsed_endpoint.port,
+                json.dumps(
+                    {
+                        "security_policy": "None",
+                        "security_mode": "None",
+                        "namespace_uri": "urn:windfarm:2wtg",
+                    }
+                ),
                 int(enabled),
             ),
         )
@@ -114,23 +125,11 @@ def _seed_runtime_connection(
                 locator,
                 locator_type,
                 variable_params,
-                display_name,
-                enabled,
-                sort_order
+                display_name
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
-                (
-                    model_id,
-                    "TotW",
-                    "s={device_code}.TotW",
-                    "node_path",
-                    json.dumps({}),
-                    "TotW",
-                    1,
-                    20,
-                ),
                 (
                     model_id,
                     "Spd",
@@ -138,8 +137,14 @@ def _seed_runtime_connection(
                     "node_path",
                     json.dumps({}),
                     "Spd",
-                    1,
-                    10,
+                ),
+                (
+                    model_id,
+                    "TotW",
+                    "s={device_code}.TotW",
+                    "node_path",
+                    json.dumps({}),
+                    "TotW",
                 ),
                 (
                     model_id,
@@ -148,8 +153,6 @@ def _seed_runtime_connection(
                     "node_path",
                     json.dumps({}),
                     "WS",
-                    1,
-                    30,
                 ),
             ],
         )

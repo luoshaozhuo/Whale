@@ -42,6 +42,11 @@ class AcquisitionTaskORM(Base):
         nullable=False,
         comment="Referenced acquisition model version",
     )
+    protocol: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        comment="Protocol used by the current task connection",
+    )
     acquisition_mode: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
@@ -51,11 +56,6 @@ class AcquisitionTaskORM(Base):
         Integer,
         nullable=False,
         comment="Scheduling interval in milliseconds for polling or loop checks",
-    )
-    endpoint: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
-        comment="Optional endpoint used by the task connection",
     )
     host: Mapped[str | None] = mapped_column(
         String(255),

@@ -99,7 +99,6 @@ def _build_states() -> list[AcquiredNodeState]:
         AcquiredNodeState(
             source_id="WTG_01",
             node_key="TotW",
-            node_id="nsu=urn:windfarm:2wtg;s=WTG_01.TotW",
             value="1200.0",
             observed_at=datetime.now(tz=UTC),
         )

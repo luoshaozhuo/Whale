@@ -47,6 +47,62 @@ git commit -m "重构 fleet_runtime 模块"
 
 # Git 常用命令大全
 
+## SSH 密钥配置（首次使用 GitHub 必做）
+
+在新机器上首次使用 GitHub 时，需要生成 SSH 密钥并将公钥添加到 GitHub。
+
+### 1. 生成 SSH 密钥
+
+```bash
+ssh-keygen -t ed25519 -C "备注说明" -f ~/.ssh/id_ed25519 -N ""
+```
+
+- `-N ""` 表示不设置密码短语，直接回车
+- 生成后文件在 `~/.ssh/id_ed25519`（私钥）和 `~/.ssh/id_ed25519.pub`（公钥）
+
+### 2. 将公钥添加到 GitHub
+
+```bash
+# 查看公钥内容，复制全部输出
+cat ~/.ssh/id_ed25519.pub
+```
+
+打开 [https://github.com/settings/ssh/new](https://github.com/settings/ssh/new)，粘贴公钥内容，点击 **Add SSH key**。
+
+### 3. 验证连接
+
+```bash
+ssh -T git@github.com
+# 成功输出：Hi <username>! You've successfully authenticated...
+```
+
+### 4. 确认远程仓库使用 SSH 地址
+
+```bash
+git remote -v
+# 应显示 git@github.com:... 开头，而不是 https://
+```
+
+若为 HTTPS 地址，切换为 SSH：
+
+```bash
+git remote set-url origin git@github.com:<username>/<repo>.git
+```
+
+### HTTPS 方式（备选）
+
+若不想配置 SSH，也可用 HTTPS + Personal Access Token（PAT）：
+
+```bash
+# 切换远程地址为 HTTPS
+git remote set-url origin https://github.com/<username>/<repo>.git
+
+# push 时输入用户名，密码处填写 PAT（不是账号密码）
+# PAT 在 GitHub → Settings → Developer settings → Personal access tokens 生成
+```
+
+---
+
 ## 基础配置
 
 ```bash

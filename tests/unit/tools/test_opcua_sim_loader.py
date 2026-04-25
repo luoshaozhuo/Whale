@@ -6,7 +6,11 @@ from xml.etree import ElementTree
 
 import pytest
 
-from tools.opcua_sim.server_runtime import load_server_config
+from tools.opcua_sim.server_runtime import (
+    DEFAULT_VARIABLE_VALUES,
+    build_simulated_variable_value,
+    load_server_config,
+)
 
 NODESET_NAMESPACE = "http://opcfoundation.org/UA/2011/03/UANodeSet.xsd"
 
@@ -48,3 +52,19 @@ def test_sample_nodeset_declares_object_type_as_subtype(
     assert reference is not None
     assert reference.get("IsForward") == "false"
     assert (reference.text or "").strip() == "BaseObjectType"
+
+
+@pytest.mark.unit
+def test_build_simulated_variable_value_offsets_variable_peaks_by_phase() -> None:
+    """Offset simulator peaks by 90 degrees across consecutive variables."""
+    sample_times = [index * 0.05 for index in range(100)]
+    peak_times = {}
+
+    for variable_name, mean in DEFAULT_VARIABLE_VALUES.items():
+        series = [
+            build_simulated_variable_value(variable_name, mean, elapsed, 0.0)
+            for elapsed in sample_times
+        ]
+        peak_times[variable_name] = sample_times[max(range(len(series)), key=series.__getitem__)]
+
+    assert peak_times["Spd"] < peak_times["TotW"] < peak_times["WS"]

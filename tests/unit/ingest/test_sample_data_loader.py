@@ -68,8 +68,27 @@ def test_load_sample_data_uses_once_for_all_acquisition_tasks(
                 select(AcquisitionTaskORM.acquisition_mode).order_by(AcquisitionTaskORM.id)
             )
         )
+        connection_hosts = list(
+            session.scalars(select(AcquisitionTaskORM.host).order_by(AcquisitionTaskORM.id))
+        )
+        connection_ports = list(
+            session.scalars(select(AcquisitionTaskORM.port).order_by(AcquisitionTaskORM.id))
+        )
+        protocols = list(
+            session.scalars(select(AcquisitionTaskORM.protocol).order_by(AcquisitionTaskORM.id))
+        )
+        namespace_uris = [
+            params.get("namespace_uri")
+            for params in session.scalars(
+                select(AcquisitionTaskORM.connection_params).order_by(AcquisitionTaskORM.id)
+            )
+        ]
 
         assert acquisition_modes == ["ONCE", "ONCE"]
+        assert connection_hosts == ["127.0.0.1", "127.0.0.1"]
+        assert connection_ports == [4840, 4841]
+        assert protocols == ["opcua", "opcua"]
+        assert namespace_uris == ["urn:windfarm:2wtg", "urn:windfarm:2wtg"]
     finally:
         session.close()
         engine.dispose()

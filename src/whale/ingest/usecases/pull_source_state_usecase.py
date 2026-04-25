@@ -76,7 +76,11 @@ class PullSourceStateUseCase:
             started_at = datetime.now(tz=UTC)
             data = await self._build_pull_role(runtime_config).acquire(runtime_config)
             if data.acquisition_status is AcquisitionStatus.SUCCEEDED:
-                await asyncio.to_thread(self._update_role.apply, data)
+                await asyncio.to_thread(
+                    self._update_role.apply_for_mode,
+                    data,
+                    runtime_config.acquisition_mode,
+                )
 
             return PullSourceStateResult(
                 runtime_config_id=runtime_config.runtime_config_id,

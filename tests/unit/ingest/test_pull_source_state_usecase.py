@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 from datetime import UTC, datetime
+from pathlib import Path
 
+import pytest
+
+from whale.ingest.adapters.store.file_variable_state_repository import (
+    FileVariableStateRepository,
+)
 from whale.ingest.ports.source.source_acquisition_port import SourceAcquisitionPort
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
 from whale.ingest.usecases.dtos.acquisition_item_data import AcquisitionItemData
@@ -154,6 +161,21 @@ def _build_runtime_config(enabled: bool = True) -> SourceRuntimeConfigData:
     )
 
 
+def _build_runtime_config_for_mode(
+    acquisition_mode: str, interval_ms: int
+) -> SourceRuntimeConfigData:
+    """Build one runtime config with a custom acquisition mode."""
+    runtime_config = _build_runtime_config()
+    return SourceRuntimeConfigData(
+        runtime_config_id=runtime_config.runtime_config_id,
+        source_id=runtime_config.source_id,
+        protocol=runtime_config.protocol,
+        acquisition_mode=acquisition_mode,
+        interval_ms=interval_ms,
+        enabled=runtime_config.enabled,
+    )
+
+
 def _build_runtime_config_with_id(runtime_config_id: int) -> SourceRuntimeConfigData:
     """Build one runtime config with a custom identifier."""
     runtime_config = _build_runtime_config()
@@ -201,7 +223,6 @@ def _build_states() -> list[AcquiredNodeState]:
         AcquiredNodeState(
             source_id="WTG_01",
             node_key="TotW",
-            node_id="nsu=urn:windfarm:2wtg;s=WTG_01.TotW",
             value="1200.0",
             observed_at=datetime.now(tz=UTC),
         )
@@ -220,6 +241,12 @@ def _assert_result_execution_window(
     assert result_ended_at.tzinfo is not None
 
 
+def _read_csv_rows(path: Path) -> list[dict[str, str]]:
+    """Read CSV records produced by the file-backed repository."""
+    with path.open("r", encoding="utf-8", newline="") as input_file:
+        return list(csv.DictReader(input_file))
+
+
 def test_execute_returns_failed_when_definition_is_missing() -> None:
     """Return FAILED when the acquisition definition cannot be built."""
     runtime_config = _build_runtime_config()
@@ -232,18 +259,49 @@ def test_execute_returns_failed_when_definition_is_missing() -> None:
         store_port=store_port,
     )
 
-    window_started_at = datetime.now(tz=UTC)
     result = asyncio.run(use_case.execute([runtime_config]))[0]
-    window_ended_at = datetime.now(tz=UTC)
 
     assert result.runtime_config_id == 101
     assert result.status == "FAILED"
     assert "Definition for `101` was not found." == result.error_message
+
+
+@pytest.mark.parametrize(
+    ("acquisition_mode", "interval_ms", "expected_filename"),
+    [
+        ("ONCE", 0, "read-results.csv"),
+        ("POLLING", 100, "polling-results.csv"),
+    ],
+)
+def test_execute_routes_pull_results_to_mode_specific_capture_file(
+    tmp_path: Path,
+    acquisition_mode: str,
+    interval_ms: int,
+    expected_filename: str,
+) -> None:
+    """Write pull results into the file associated with the runtime acquisition mode."""
+    runtime_config = _build_runtime_config_for_mode(acquisition_mode, interval_ms)
+    use_case = PullSourceStateUseCase(
+        acquisition_definition_port=FakeAcquisitionDefinitionPort(_build_definition()),
+        acquisition_port_registry=FakeSourceAcquisitionPortRegistry(
+            {"opcua": FakeSourceAcquisitionPort(_build_states())}
+        ),
+        store_port=FileVariableStateRepository(tmp_path),
+    )
+
+    window_started_at = datetime.now(tz=UTC)
+    result = asyncio.run(use_case.execute([runtime_config]))[0]
+    window_ended_at = datetime.now(tz=UTC)
+
+    assert result.status is AcquisitionStatus.SUCCEEDED
+    records = _read_csv_rows(tmp_path / expected_filename)
+    assert [record["variable_key"] for record in records] == ["TotW"]
+    assert [record["device_code"] for record in records] == ["WTG_01"]
+    assert [record["model_id"] for record in records] == ["goldwind_gw121_opcua"]
+    assert all(record["source_observed_at"] for record in records)
     _assert_result_execution_window(
         result.started_at, result.ended_at, window_started_at, window_ended_at
     )
-    assert store_port.calls == []
-    assert result.status is AcquisitionStatus.FAILED
 
 
 def test_execute_returns_succeeded_and_persists_states() -> None:

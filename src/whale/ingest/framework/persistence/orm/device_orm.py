@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from whale.ingest.framework.persistence.base import Base
@@ -47,10 +47,4 @@ class DeviceORM(Base):
         String(64),
         nullable=True,
         comment="Collection-line identifier for the device",
-    )
-    enabled: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=True,
-        comment="Whether this device is enabled for task assignment",
     )

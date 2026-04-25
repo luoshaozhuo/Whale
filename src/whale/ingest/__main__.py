@@ -72,6 +72,7 @@ def _build_subscribe_source_state_usecase() -> SubscribeSourceStateUseCase:
         acquisition_port_registry=StaticSourceAcquisitionPortRegistry(
             {"opcua": OpcUaSourceAcquisitionAdapter()}
         ),
+        store_port=SqliteVariableStateRepository(),
     )
 
 

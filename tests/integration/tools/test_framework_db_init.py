@@ -38,7 +38,8 @@ def test_init_db_creates_all_framework_tables(
     init_db_module.init_db()
     init_db_module.init_db()
 
-    table_names = set(inspect(engine).get_table_names())
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
     assert table_names == {
         "acquisition_model",
         "acquisition_task",
@@ -47,3 +48,5 @@ def test_init_db_creates_all_framework_tables(
         "substation",
         "variable_state",
     }
+    primary_key = inspector.get_pk_constraint("variable_state")
+    assert primary_key["constrained_columns"] == ["id"]

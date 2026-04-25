@@ -35,7 +35,7 @@ def _session_factory() -> Generator[Session, None, None]:
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
     try:
-        substation = SubstationORM(name="S1", enabled=True)
+        substation = SubstationORM(name="S1")
         session.add(substation)
         session.flush()
         device = DeviceORM(
@@ -43,7 +43,6 @@ def _session_factory() -> Generator[Session, None, None]:
             device_code="WTG_01",
             device_model="WTG",
             line_number="L1",
-            enabled=True,
         )
         session.add(device)
         session.flush()
@@ -52,18 +51,22 @@ def _session_factory() -> Generator[Session, None, None]:
                 device_id=int(device.id),
                 model_id="M1",
                 model_version="v1",
+                protocol="opcua",
                 acquisition_mode="ONCE",
                 interval_ms=0,
-                endpoint="opc.tcp://127.0.0.1:4840",
-                connection_params={"security_policy": "None", "security_mode": "None"},
+                host="127.0.0.1",
+                port=4840,
+                connection_params={
+                    "security_policy": "None",
+                    "security_mode": "None",
+                    "namespace_uri": "urn:windfarm:2wtg",
+                },
                 enabled=True,
             )
         )
         model = AcquisitionModelORM(
             model_id="M1",
             model_version="v1",
-            protocol="opcua",
-            model_params={"namespace_uri": "urn:windfarm:2wtg"},
         )
         session.add(model)
         session.flush()
@@ -71,23 +74,19 @@ def _session_factory() -> Generator[Session, None, None]:
             [
                 AcquisitionVariableORM(
                     model_id=int(model.id),
-                    variable_key="TotW",
-                    locator="s={device_code}.TotW",
-                    locator_type="node_path",
-                    variable_params={},
-                    display_name="Total Power",
-                    enabled=True,
-                    sort_order=20,
-                ),
-                AcquisitionVariableORM(
-                    model_id=int(model.id),
                     variable_key="Spd",
                     locator="s={device_code}.Spd",
                     locator_type="node_path",
                     variable_params={},
                     display_name="Rotor Speed",
-                    enabled=True,
-                    sort_order=10,
+                ),
+                AcquisitionVariableORM(
+                    model_id=int(model.id),
+                    variable_key="TotW",
+                    locator="s={device_code}.TotW",
+                    locator_type="node_path",
+                    variable_params={},
+                    display_name="Total Power",
                 ),
                 AcquisitionVariableORM(
                     model_id=int(model.id),
@@ -96,8 +95,6 @@ def _session_factory() -> Generator[Session, None, None]:
                     locator_type="node_path",
                     variable_params={},
                     display_name="Wind Speed",
-                    enabled=False,
-                    sort_order=30,
                 ),
             ]
         )
@@ -143,15 +140,17 @@ def test_get_config_builds_request_shape_from_orm_rows() -> None:
     )
 
     assert definition.model_id == "M1"
-    assert definition.connection.endpoint == "opc.tcp://127.0.0.1:4840"
+    assert definition.connection.endpoint is None
+    assert definition.connection.host == "127.0.0.1"
+    assert definition.connection.port == 4840
     assert definition.connection.params["security_policy"] == "None"
     assert definition.connection.params["namespace_uri"] == "urn:windfarm:2wtg"
-    assert [item.key for item in definition.items] == ["Spd", "TotW"]
+    assert [item.key for item in definition.items] == ["Spd", "TotW", "WS"]
     assert definition.items[0].locator == "s=WTG_01.Spd"
 
 
-def test_get_config_uses_enabled_bindings_only() -> None:
-    """Return only enabled items from the explicit source-item binding table."""
+def test_get_config_returns_all_model_variables_in_row_order() -> None:
+    """Return all model variables ordered by acquisition-variable row id."""
     repository = OpcUaSourceAcquisitionDefinitionRepository(
         session_factory=_repository_session_factory
     )
@@ -173,19 +172,20 @@ def test_get_config_uses_enabled_bindings_only() -> None:
     assert [item.display_name for item in definition.items] == [
         "Rotor Speed",
         "Total Power",
+        "Wind Speed",
     ]
     assert definition.connection.params["namespace_uri"] == "urn:windfarm:2wtg"
     assert all(item.params == {} for item in definition.items)
     assert all(item.locator.startswith("s=WTG_01.") for item in definition.items)
 
 
-def test_get_config_raises_when_source_has_no_enabled_binding() -> None:
-    """Raise LookupError when the source has no enabled acquisition items."""
+def test_get_config_raises_when_model_has_no_variables() -> None:
+    """Raise LookupError when the source model has no acquisition items."""
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
     try:
-        substation = SubstationORM(name="S2", enabled=True)
+        substation = SubstationORM(name="S2")
         session.add(substation)
         session.flush()
         device = DeviceORM(
@@ -193,7 +193,6 @@ def test_get_config_raises_when_source_has_no_enabled_binding() -> None:
             device_code="WTG_02",
             device_model="WTG",
             line_number="L2",
-            enabled=True,
         )
         session.add(device)
         session.flush()
@@ -202,33 +201,25 @@ def test_get_config_raises_when_source_has_no_enabled_binding() -> None:
                 device_id=int(device.id),
                 model_id="M2",
                 model_version="v1",
+                protocol="opcua",
                 acquisition_mode="ONCE",
                 interval_ms=0,
-                endpoint="opc.tcp://127.0.0.1:4840",
-                connection_params={"security_policy": "None", "security_mode": "None"},
+                host="127.0.0.1",
+                port=4840,
+                connection_params={
+                    "security_policy": "None",
+                    "security_mode": "None",
+                    "namespace_uri": "urn:windfarm:2wtg",
+                },
                 enabled=True,
             )
         )
         model = AcquisitionModelORM(
             model_id="M2",
             model_version="v1",
-            protocol="opcua",
-            model_params={"namespace_uri": "urn:windfarm:2wtg"},
         )
         session.add(model)
         session.flush()
-        session.add(
-            AcquisitionVariableORM(
-                model_id=int(model.id),
-                variable_key="TotW",
-                locator="s={device_code}.TotW",
-                locator_type="node_path",
-                variable_params={},
-                display_name="Total Power",
-                enabled=False,
-                sort_order=10,
-            )
-        )
         session.commit()
 
         @contextmanager
@@ -259,10 +250,10 @@ def test_get_config_raises_when_source_has_no_enabled_binding() -> None:
             )
         except LookupError as exc:
             assert str(exc) == (
-                "No enabled acquisition variables were found for " "model `M2` version `v1`."
+                "No acquisition variables were found for " "model `M2` version `v1`."
             )
         else:
-            raise AssertionError("Expected LookupError when variables are all disabled.")
+            raise AssertionError("Expected LookupError when variables are missing.")
     finally:
         session.close()
         engine.dispose()

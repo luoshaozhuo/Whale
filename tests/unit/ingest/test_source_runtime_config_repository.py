@@ -32,7 +32,7 @@ def _session_factory() -> Generator[Session, None, None]:
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
     try:
-        substation = SubstationORM(name="S1", enabled=True)
+        substation = SubstationORM(name="S1")
         session.add(substation)
         session.flush()
         first_device = DeviceORM(
@@ -40,20 +40,17 @@ def _session_factory() -> Generator[Session, None, None]:
             device_code="WTG_01",
             device_model="WTG",
             line_number="L1",
-            enabled=True,
         )
         second_device = DeviceORM(
             substation_id=int(substation.id),
             device_code="WTG_02",
             device_model="WTG",
             line_number="L1",
-            enabled=True,
         )
         session.add_all([first_device, second_device])
         model = AcquisitionModelORM(
             model_id="M1",
             model_version="v1",
-            protocol="opcua",
         )
         session.add(model)
         session.flush()
@@ -64,8 +61,6 @@ def _session_factory() -> Generator[Session, None, None]:
                 locator="s={device_code}.TotW",
                 locator_type="node_path",
                 variable_params={},
-                sort_order=0,
-                enabled=True,
             )
         )
         session.flush()
@@ -75,6 +70,7 @@ def _session_factory() -> Generator[Session, None, None]:
                     device_id=int(first_device.id),
                     model_id="M1",
                     model_version="v1",
+                    protocol="opcua",
                     acquisition_mode="ONCE",
                     interval_ms=0,
                     enabled=True,
@@ -83,6 +79,7 @@ def _session_factory() -> Generator[Session, None, None]:
                     device_id=int(second_device.id),
                     model_id="M1",
                     model_version="v1",
+                    protocol="opcua",
                     acquisition_mode="ONCE",
                     interval_ms=1000,
                     enabled=False,

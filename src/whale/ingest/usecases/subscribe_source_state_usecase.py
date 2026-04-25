@@ -10,9 +10,13 @@ from whale.ingest.ports.source.source_acquisition_definition_port import (
 from whale.ingest.ports.source.source_acquisition_port_registry import (
     SourceAcquisitionPortRegistry,
 )
+from whale.ingest.ports.store.source_state_store_port import (
+    SourceStateStorePort,
+)
 from whale.ingest.usecases.dtos.source_runtime_config_data import (
     SourceRuntimeConfigData,
 )
+from whale.ingest.usecases.roles.state_update_role import StateUpdateRole
 from whale.ingest.usecases.roles.subscribe_role import SubscribeRole
 
 
@@ -23,10 +27,12 @@ class SubscribeSourceStateUseCase:
         self,
         acquisition_definition_port: SourceAcquisitionDefinitionPort,
         acquisition_port_registry: SourceAcquisitionPortRegistry,
+        store_port: SourceStateStorePort,
     ) -> None:
         """Build subscription dependencies for one long-running job."""
         self._acquisition_definition_port = acquisition_definition_port
         self._acquisition_port_registry = acquisition_port_registry
+        self._update_role = StateUpdateRole(store_port=store_port)
 
     async def execute(
         self,
@@ -50,4 +56,5 @@ class SubscribeSourceStateUseCase:
         return SubscribeRole(
             acquisition_definition_port=self._acquisition_definition_port,
             acquisition_port=self._acquisition_port_registry.get(runtime_config.protocol),
+            state_update_role=self._update_role,
         )

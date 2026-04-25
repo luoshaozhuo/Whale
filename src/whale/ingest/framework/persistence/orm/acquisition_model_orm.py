@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from sqlalchemy import JSON, Integer, String, UniqueConstraint
+from sqlalchemy import Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from whale.ingest.framework.persistence.base import Base
 
 
 class AcquisitionModelORM(Base):
-    """Persist one acquisition model header with protocol and version."""
+    """Persist one acquisition model header with identity and version."""
 
     __tablename__ = "acquisition_model"
     __table_args__ = (
@@ -37,15 +37,4 @@ class AcquisitionModelORM(Base):
         String(64),
         nullable=False,
         comment="Version of the acquisition model definition",
-    )
-    protocol: Mapped[str] = mapped_column(
-        String(64),
-        nullable=False,
-        comment="Protocol used by this acquisition model version",
-    )
-    model_params: Mapped[dict[str, str | int | float | bool | None]] = mapped_column(
-        JSON,
-        nullable=False,
-        default=dict,
-        comment="Model-level protocol parameters stored as structured JSON",
     )

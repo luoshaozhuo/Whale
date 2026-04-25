@@ -12,6 +12,5 @@ class AcquiredNodeState:
 
     source_id: str
     node_key: str
-    node_id: str
     value: str
     observed_at: datetime

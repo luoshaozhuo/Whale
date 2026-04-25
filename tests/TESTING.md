@@ -114,22 +114,12 @@ pytest tests/unit/tools/test_opcua_sim_loader.py -vv -s
 - 里面定义的 fixture 不需要手动注册
 - 测试函数只要把 fixture 名写进参数列表，pytest 就会自动准备依赖
 
-这个文件主要负责三类事情：
+这个文件目前主要负责两类事情：
 
-- 提供场景测试数据路径
 - 提供 OPC UA 模板文件路径
 - 为集成测试准备本地 OPC UA 运行环境
 
 ### Fixture Groups
-
-场景数据相关：
-
-- `scenario1_fixture_dir`
-- `sample_scl_path`
-- `sample_power_curve_path`
-- `sample_raw_payloads`
-- `scenario1_registry`
-- `scenario1_registry_maps`
 
 OPC UA 模板相关：
 

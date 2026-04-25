@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from whale.ingest.framework.persistence.base import Base
@@ -58,16 +58,4 @@ class AcquisitionVariableORM(Base):
         nullable=False,
         default=dict,
         comment="Protocol-specific variable parameters stored as structured JSON",
-    )
-    sort_order: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
-        default=0,
-        comment="Stable variable ordering within one model version",
-    )
-    enabled: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=True,
-        comment="Whether this variable row is enabled for acquisition",
     )

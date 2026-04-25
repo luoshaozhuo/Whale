@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import random
 import threading
+import time
 from pathlib import Path
 
 import yaml
@@ -14,7 +16,10 @@ from tools.opcua_sim.models import OpcUaServerConfig
 
 DEFAULT_NAMESPACE_URI = "urn:windfarm:2wtg"
 DEFAULT_UPDATE_INTERVAL_SECONDS = 5.0
-DEFAULT_STDDEV_RATIO = 0.10
+DEFAULT_STDDEV_RATIO = 0.02
+DEFAULT_SINE_PERIOD_SECONDS = 5.0
+DEFAULT_SINE_AMPLITUDE_RATIO = 0.15
+DEFAULT_PHASE_STEP_DEGREES = 90.0
 DEFAULT_VARIABLE_VALUES = {
     "TotW": 1200.0,
     "Spd": 12.5,
@@ -24,6 +29,27 @@ DEFAULT_VARIABLE_VALUES = {
 
 class OpcUaServerRuntimeError(ValueError):
     """Raised when simulator bootstrap input is invalid."""
+
+
+def build_simulated_variable_value(
+    variable_name: str,
+    mean: float,
+    elapsed_seconds: float,
+    random_component: float,
+    *,
+    period_seconds: float = DEFAULT_SINE_PERIOD_SECONDS,
+    amplitude_ratio: float = DEFAULT_SINE_AMPLITUDE_RATIO,
+    phase_step_degrees: float = DEFAULT_PHASE_STEP_DEGREES,
+) -> float:
+    """Build one simulated value from the variable mean, noise and phase-shifted sine wave."""
+    phase_index = tuple(DEFAULT_VARIABLE_VALUES).index(variable_name)
+    phase_radians = math.radians(phase_index * phase_step_degrees)
+    sine_component = (
+        abs(mean)
+        * amplitude_ratio
+        * math.sin(((2.0 * math.pi) / period_seconds) * elapsed_seconds + phase_radians)
+    )
+    return max(0.0, mean + random_component + sine_component)
 
 
 def load_server_config(path: str | Path, connection_name: str) -> OpcUaServerConfig:
@@ -157,14 +183,14 @@ class OpcUaServerRuntime:
         if self._config.update_interval_seconds <= 0:
             return
 
-        variable_means = self._build_variable_means(server)
-        if not variable_means:
+        variable_specs = self._build_variable_specs(server)
+        if not variable_specs:
             return
 
         self._stop_updates.clear()
         self._update_thread = threading.Thread(
             target=self._run_value_updates,
-            args=(server, variable_means),
+            args=(server, variable_specs),
             daemon=True,
             name=f"opcua-sim-{self._config.name}",
         )
@@ -177,25 +203,40 @@ class OpcUaServerRuntime:
             self._update_thread.join(timeout=max(self._config.update_interval_seconds, 1.0))
             self._update_thread = None
 
-    def _build_variable_means(self, server: Server) -> dict[str, float]:
-        """Build the per-variable mean map from the default simulation values."""
+    def _build_variable_specs(self, server: Server) -> dict[str, tuple[str, float]]:
+        """Build the per-variable name and mean map from the default simulation values."""
         namespace_index = server.get_namespace_index(self._namespace_uri)
         turbine = server.nodes.objects.get_child(
             [f"{namespace_index}:WindFarm", f"{namespace_index}:{self._config.name}"]
         )
-        variable_means: dict[str, float] = {}
+        variable_specs: dict[str, tuple[str, float]] = {}
 
         for child in turbine.get_children():
             variable_name = child.read_browse_name().Name
             if variable_name not in DEFAULT_VARIABLE_VALUES:
                 continue
-            variable_means[child.nodeid.to_string()] = DEFAULT_VARIABLE_VALUES[variable_name]
+            variable_specs[child.nodeid.to_string()] = (
+                variable_name,
+                DEFAULT_VARIABLE_VALUES[variable_name],
+            )
 
-        return variable_means
+        return variable_specs
 
-    def _run_value_updates(self, server: Server, variable_means: dict[str, float]) -> None:
+    def _run_value_updates(
+        self,
+        server: Server,
+        variable_specs: dict[str, tuple[str, float]],
+    ) -> None:
         """Periodically refresh each turbine variable around its configured mean."""
+        started_at = time.monotonic()
         while not self._stop_updates.wait(self._config.update_interval_seconds):
-            for node_id, mean in variable_means.items():
-                next_value = self._random.gauss(mean, abs(mean) * DEFAULT_STDDEV_RATIO)
+            elapsed_seconds = time.monotonic() - started_at
+            for node_id, (variable_name, mean) in variable_specs.items():
+                random_component = self._random.gauss(0.0, abs(mean) * DEFAULT_STDDEV_RATIO)
+                next_value = build_simulated_variable_value(
+                    variable_name,
+                    mean,
+                    elapsed_seconds,
+                    random_component,
+                )
                 server.get_node(node_id).write_value(ua.Variant(next_value, ua.VariantType.Double))

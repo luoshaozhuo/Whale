@@ -54,7 +54,7 @@ class OpcUaSourceAcquisitionDefinitionRepository(SourceAcquisitionDefinitionPort
             runtime_config: Runtime-config snapshot for the current refresh step.
 
         Raises:
-            LookupError: Task, device or enabled model rows are missing.
+            LookupError: Task, device, model or acquisition-variable rows are missing.
         """
         with self._session_factory() as session:
             task = session.get(AcquisitionTaskORM, runtime_config.runtime_config_id)
@@ -71,7 +71,6 @@ class OpcUaSourceAcquisitionDefinitionRepository(SourceAcquisitionDefinitionPort
                 select(AcquisitionModelORM).where(
                     AcquisitionModelORM.model_id == task.model_id,
                     AcquisitionModelORM.model_version == task.model_version,
-                    AcquisitionModelORM.protocol == runtime_config.protocol,
                 )
             )
             if model is None:
@@ -83,32 +82,25 @@ class OpcUaSourceAcquisitionDefinitionRepository(SourceAcquisitionDefinitionPort
             variable_rows = list(
                 session.scalars(
                     select(AcquisitionVariableORM)
-                    .where(
-                        AcquisitionVariableORM.model_id == model.id,
-                        AcquisitionVariableORM.enabled.is_(True),
-                    )
-                    .order_by(
-                        AcquisitionVariableORM.sort_order,
-                        AcquisitionVariableORM.id,
-                    )
+                    .where(AcquisitionVariableORM.model_id == model.id)
+                    .order_by(AcquisitionVariableORM.id)
                 )
             )
 
         if not variable_rows:
             raise LookupError(
-                "No enabled acquisition variables were found for "
+                "No acquisition variables were found for "
                 f"model `{task.model_id}` version `{task.model_version}`."
             )
 
         return SourceAcquisitionDefinition(
             model_id=task.model_id,
             connection=SourceConnectionData(
-                endpoint=task.endpoint,
                 host=task.host,
                 port=task.port,
                 username=task.username,
                 password=task.password,
-                params={**dict(task.connection_params), **dict(model.model_params)},
+                params=dict(task.connection_params),
             ),
             items=[
                 AcquisitionItemData(

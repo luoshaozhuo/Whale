@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import subprocess
 import threading
 import time
@@ -18,6 +19,13 @@ from tools.opcua_sim.server_runtime import OpcUaServerRuntime
 CLI_BROWSE_NODE = "ns=2;s=WindFarm"
 CLI_STARTUP_TIMEOUT_SECONDS = 10.0
 INTERVAL_TOLERANCE_SECONDS = 0.08
+
+
+def _get_free_port() -> int:
+    """Return one currently available localhost TCP port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def _run_uals(endpoint: str) -> subprocess.CompletedProcess[str]:
@@ -120,7 +128,7 @@ def test_uaserver_cli_imports_nodeset_template_and_exposes_windfarm(
     sample_nodeset_path: str,
 ) -> None:
     """Start the asyncua CLI server from the template NodeSet and browse it with uals."""
-    endpoint = "opc.tcp://127.0.0.1:4840"
+    endpoint = f"opc.tcp://127.0.0.1:{_get_free_port()}"
     process = subprocess.Popen(
         ["uaserver", "-x", sample_nodeset_path, "-u", endpoint],
         stdout=subprocess.DEVNULL,
