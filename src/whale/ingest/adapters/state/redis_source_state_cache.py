@@ -96,9 +96,13 @@ class RedisSourceStateCache(SourceStateCachePort, SourceStateSnapshotReaderPort)
             client: Optional injected Redis client used by tests or callers that
                 manage their own Redis connection lifecycle.
         """
-        self._settings = settings or RedisSourceStateCacheSettings.from_config(
-            CONFIG.redis_state_cache
-        )
+        if settings is None:
+            if not isinstance(CONFIG.state_cache, RedisStateCacheConfig):
+                raise RuntimeError(
+                    "RedisSourceStateCache requires the redis state-cache backend to be configured."
+                )
+            settings = RedisSourceStateCacheSettings.from_config(CONFIG.state_cache)
+        self._settings = settings
         self._client = client or self._build_client(self._settings)
 
     def store_many(

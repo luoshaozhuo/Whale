@@ -9,23 +9,24 @@ from pathlib import Path
 from sqlalchemy import URL, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from whale.ingest.config import CONFIG
+from whale.ingest.config import CONFIG, PostgresDatabaseConfig, SqliteDatabaseConfig
 
 
 def create_db_url() -> URL:
-    """Build the database URL from `CONFIG` and environment variables."""
+    """Build the database URL from the configured ingest database backend."""
     database = CONFIG.database.database
-    if CONFIG.database.drivername.startswith("sqlite"):
+    if isinstance(CONFIG.database, SqliteDatabaseConfig):
         database_path = Path(database)
         if not database_path.is_absolute():
             database_path = (Path(__file__).resolve().parents[2] / database_path).resolve()
         return URL.create(
-            drivername=CONFIG.database.drivername,
+            drivername="sqlite",
             database=str(database_path),
         )
 
+    assert isinstance(CONFIG.database, PostgresDatabaseConfig)
     return URL.create(
-        drivername=CONFIG.database.drivername,
+        drivername="postgresql+psycopg",
         username=CONFIG.database.username,
         password=CONFIG.database.password,
         host=CONFIG.database.host,
@@ -36,11 +37,11 @@ def create_db_url() -> URL:
 
 engine = create_engine(
     create_db_url(),
-    pool_size=CONFIG.database.pool_size,
-    max_overflow=CONFIG.database.max_overflow,
-    pool_timeout=CONFIG.database.pool_timeout,
-    pool_recycle=CONFIG.database.pool_recycle,
-    pool_pre_ping=CONFIG.database.pool_pre_ping,
+    pool_size=CONFIG.database_engine.pool_size,
+    max_overflow=CONFIG.database_engine.max_overflow,
+    pool_timeout=CONFIG.database_engine.pool_timeout,
+    pool_recycle=CONFIG.database_engine.pool_recycle,
+    pool_pre_ping=CONFIG.database_engine.pool_pre_ping,
     echo=False,
 )
 

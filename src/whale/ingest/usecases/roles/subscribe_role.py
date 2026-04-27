@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from typing import Protocol
 
 from whale.ingest.ports.source.source_acquisition_definition_port import (
     SourceAcquisitionDefinitionPort,
@@ -28,6 +29,13 @@ from whale.ingest.usecases.dtos.source_subscription_request import (
 from whale.ingest.usecases.roles.state_update_role import StateUpdateRole
 
 
+class SnapshotEmitter(Protocol):
+    """Minimal snapshot emission contract used by subscribe role."""
+
+    def execute(self) -> object:
+        """Emit one full latest-state snapshot."""
+
+
 class SubscribeRole:
     """Build subscription requests for runtime-config snapshots."""
 
@@ -36,11 +44,13 @@ class SubscribeRole:
         acquisition_definition_port: SourceAcquisitionDefinitionPort,
         acquisition_port: SourceAcquisitionPort,
         state_update_role: StateUpdateRole,
+        snapshot_emitter: SnapshotEmitter | None = None,
     ) -> None:
         """Store dependencies required for subscription startup."""
         self._acquisition_definition_port = acquisition_definition_port
         self._acquisition_port = acquisition_port
         self._state_update_role = state_update_role
+        self._snapshot_emitter = snapshot_emitter
 
     async def subscribe(
         self,
@@ -88,6 +98,7 @@ class SubscribeRole:
             ),
             runtime_config.acquisition_mode,
         )
+        await self._emit_snapshot()
 
     @staticmethod
     def _build_request(
@@ -136,9 +147,16 @@ class SubscribeRole:
                 ),
                 runtime_config.acquisition_mode,
             )
+            await self._emit_snapshot()
 
         return _state_received
 
     async def _subscribe_request(self, request: SourceSubscriptionRequest) -> None:
         """Run one subscription request through the configured acquisition port."""
         await self._acquisition_port.subscribe(request)
+
+    async def _emit_snapshot(self) -> None:
+        """Emit a full latest-state snapshot when an emitter is configured."""
+        if self._snapshot_emitter is None:
+            return
+        await asyncio.to_thread(self._snapshot_emitter.execute)

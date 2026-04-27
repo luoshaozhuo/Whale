@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 from importlib import import_module
 from pathlib import Path
 
 from sqlalchemy import inspect
 
-from whale.ingest.config import CONFIG
+from tools.opcua_sim.__main__ import DEFAULT_CONFIG_PATH, DEFAULT_NODESET_PATH
+from whale.ingest.config import CONFIG, PostgresDatabaseConfig, SqliteDatabaseConfig
 from whale.ingest.framework.persistence.base import Base
 from whale.ingest.framework.persistence.sample_data_loader import load_sample_data
 from whale.ingest.framework.persistence.session import engine, session_scope
@@ -15,32 +17,46 @@ from whale.ingest.framework.persistence.session import engine, session_scope
 
 def init_db() -> None:
     """Create ORM tables and optionally load sample data."""
-    import_module("whale.ingest.framework.persistence.orm")
-
     if _has_existing_schema():
         confirmation = input(_build_delete_confirmation_prompt()).strip()
         if confirmation != "delete":
             print("已取消初始化。")
             return
-        _clear_existing_storage()
+        reset_db()
 
     insert_sample_data = input("是否插入样例数据？(y/n)：").strip().lower()
-
-    Base.metadata.create_all(bind=engine)
-    if insert_sample_data == "y":
-        with session_scope() as session:
-            load_sample_data(
-                session=session,
-                connection_config_path=_resolve_repo_path(
-                    CONFIG.opcua.connection_config_path,
-                ),
-                nodeset_path=_resolve_repo_path(CONFIG.opcua.nodeset_path),
-            )
+    initialize_db(insert_sample_data=insert_sample_data == "y")
     print("已完成初始化。")
+
+
+def initialize_db(*, insert_sample_data: bool) -> None:
+    """Create ORM tables and optionally load the default sample data."""
+    import_module("whale.ingest.framework.persistence.orm")
+    Base.metadata.create_all(bind=engine)
+    if insert_sample_data:
+        load_default_sample_data()
+
+
+def reset_db() -> None:
+    """Remove current persisted storage for the configured ingest database."""
+    import_module("whale.ingest.framework.persistence.orm")
+    _clear_existing_storage()
+
+
+def load_default_sample_data() -> None:
+    """Load the built-in sample data templates into the current ingest database."""
+    with session_scope() as session:
+        load_sample_data(
+            session=session,
+            connection_config_path=DEFAULT_CONFIG_PATH.resolve(),
+            nodeset_path=DEFAULT_NODESET_PATH.resolve(),
+        )
 
 
 def _resolve_database_path() -> Path:
     """Return the concrete SQLite database path."""
+    if not isinstance(CONFIG.database, SqliteDatabaseConfig):
+        raise RuntimeError("Current ingest database backend is not sqlite.")
     database = CONFIG.database.database
     database_path = Path(database)
     if not database_path.is_absolute():
@@ -56,7 +72,7 @@ def _has_existing_schema() -> bool:
 
 def _clear_existing_storage() -> None:
     """Remove existing stored schema for the configured database."""
-    if CONFIG.database.drivername.startswith("sqlite"):
+    if isinstance(CONFIG.database, SqliteDatabaseConfig):
         database_path = _resolve_database_path()
         engine.dispose()
         if database_path.exists():
@@ -71,14 +87,15 @@ def _clear_existing_storage() -> None:
 
 def _storage_display_name() -> str:
     """Return a user-facing description of the configured storage target."""
-    if CONFIG.database.drivername.startswith("sqlite"):
+    if isinstance(CONFIG.database, SqliteDatabaseConfig):
         return f"Database at {_resolve_database_path()}"
-    return f"Database {CONFIG.database.drivername}://{CONFIG.database.database}"
+    assert isinstance(CONFIG.database, PostgresDatabaseConfig)
+    return f"Database {CONFIG.database.backend}://{CONFIG.database.database}"
 
 
 def _build_delete_confirmation_prompt() -> str:
     """Return the localized delete confirmation prompt."""
-    if CONFIG.database.drivername.startswith("sqlite"):
+    if isinstance(CONFIG.database, SqliteDatabaseConfig):
         return (
             f"{_storage_display_name()} 已包含数据表。"
             "此操作会永久删除当前整个数据库文件及其中的所有数据。"
@@ -92,10 +109,41 @@ def _build_delete_confirmation_prompt() -> str:
     )
 
 
-def _resolve_repo_path(path_value: str) -> Path:
-    """Return an absolute repository path from one configured relative path."""
-    return (Path(__file__).resolve().parents[5] / path_value).resolve()
+def _build_argument_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser for non-interactive DB initialization."""
+    parser = argparse.ArgumentParser(description="Initialize the ingest persistence database.")
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Delete existing configured storage before re-initializing.",
+    )
+    parser.add_argument(
+        "--sample-data",
+        action="store_true",
+        help="Insert built-in sample acquisition data after creating tables.",
+    )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Run without interactive prompts and fail fast on invalid operations.",
+    )
+    return parser
+
+
+def main() -> int:
+    """Run the init-db entrypoint in interactive or non-interactive mode."""
+    args = _build_argument_parser().parse_args()
+
+    if not args.non_interactive and not args.reset and not args.sample_data:
+        init_db()
+        return 0
+
+    if args.reset:
+        reset_db()
+    initialize_db(insert_sample_data=args.sample_data)
+    print("已完成初始化。")
+    return 0
 
 
 if __name__ == "__main__":
-    init_db()
+    raise SystemExit(main())

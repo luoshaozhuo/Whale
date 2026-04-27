@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import csv
 from datetime import UTC, datetime
-from pathlib import Path
 from threading import Event
 
-from whale.ingest.adapters.state.file_source_state_cache import (
-    FileSourceStateCache,
-)
+from whale.ingest.ports.state import ModeAwareSourceStateCachePort
 from whale.ingest.ports.source.source_acquisition_port import SourceAcquisitionPort
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
 from whale.ingest.usecases.dtos.acquisition_item_data import AcquisitionItemData
@@ -118,6 +114,41 @@ class FakeSourceStateCachePort:
         return len(acquired_states)
 
 
+class FakeSnapshotEmitter:
+    """Capture snapshot emission calls for subscribe tests."""
+
+    def __init__(self) -> None:
+        """Initialize one empty call list."""
+        self.call_count = 0
+
+    def execute(self) -> object:
+        """Record one snapshot emission call."""
+        self.call_count += 1
+        return {"emitted": True}
+
+
+class FakeModeAwareSourceStateCachePort(ModeAwareSourceStateCachePort):
+    """Capture mode-aware latest-state updates for subscription tests."""
+
+    def __init__(self) -> None:
+        """Initialize one empty mode-aware call list."""
+        self.calls_by_mode: list[tuple[str, str, list[AcquiredNodeState]]] = []
+
+    def store_many(self, model_id: str, acquired_states: list[AcquiredNodeState]) -> int:
+        """Capture default updates as ONCE mode refreshes."""
+        return self.store_many_for_mode("ONCE", model_id, acquired_states)
+
+    def store_many_for_mode(
+        self,
+        acquisition_mode: str,
+        model_id: str,
+        acquired_states: list[AcquiredNodeState],
+    ) -> int:
+        """Capture one mode-specific state refresh batch."""
+        self.calls_by_mode.append((acquisition_mode, model_id, list(acquired_states)))
+        return len(acquired_states)
+
+
 def _build_runtime_config(runtime_config_id: int, source_id: str) -> SourceRuntimeConfigData:
     """Build one subscription runtime config for tests."""
     return SourceRuntimeConfigData(
@@ -142,12 +173,6 @@ def _build_definition(model_id: str, source_id: str) -> SourceAcquisitionDefinit
             )
         ],
     )
-
-
-def _read_csv_rows(path: Path) -> list[dict[str, str]]:
-    """Read CSV records produced by the file-backed repository."""
-    with path.open("r", encoding="utf-8", newline="") as input_file:
-        return list(csv.DictReader(input_file))
 
 
 def test_execute_starts_all_source_subscriptions_and_stores_updates() -> None:
@@ -190,15 +215,14 @@ def test_execute_starts_all_source_subscriptions_and_stores_updates() -> None:
     ]
 
 
-def test_execute_routes_subscription_results_to_subscription_capture_file(
-    tmp_path: Path,
-) -> None:
-    """Write initial reads and later subscription updates into the capture file."""
+def test_execute_routes_subscription_results_with_subscription_mode() -> None:
+    """Tag both initial and incremental subscription updates with SUBSCRIPTION mode."""
     runtime_configs = (
         _build_runtime_config(101, "WTG_01"),
         _build_runtime_config(102, "WTG_02"),
     )
     acquisition_port = ConcurrentFakeSourceAcquisitionPort()
+    state_cache_port = FakeModeAwareSourceStateCachePort()
     use_case = SubscribeSourceStateUseCase(
         acquisition_definition_port=FakeAcquisitionDefinitionPort(
             {
@@ -207,22 +231,53 @@ def test_execute_routes_subscription_results_to_subscription_capture_file(
             }
         ),
         acquisition_port_registry=FakeSourceAcquisitionPortRegistry({"opcua": acquisition_port}),
-        state_cache_port=FileSourceStateCache(tmp_path),
+        state_cache_port=state_cache_port,
     )
 
     asyncio.run(use_case.execute(runtime_configs=runtime_configs, stop_event=Event()))
 
-    records = _read_csv_rows(tmp_path / "subscription-results.csv")
-    assert [record["device_code"] for record in records] == [
+    assert [mode for mode, _, _ in state_cache_port.calls_by_mode] == [
+        "SUBSCRIPTION",
+        "SUBSCRIPTION",
+        "SUBSCRIPTION",
+        "SUBSCRIPTION",
+    ]
+    flattened_states = [states[0] for _, _, states in state_cache_port.calls_by_mode]
+    assert [state.source_id for state in flattened_states] == [
         "WTG_01",
         "WTG_02",
         "WTG_01",
         "WTG_02",
     ]
-    assert [record["model_id"] for record in records] == [
+    assert [model_id for _, model_id, _ in state_cache_port.calls_by_mode] == [
         "model_1",
         "model_2",
         "model_1",
         "model_2",
     ]
-    assert [record["value"] for record in records] == ["41.0", "41.0", "42.0", "42.0"]
+    assert [state.value for state in flattened_states] == ["41.0", "41.0", "42.0", "42.0"]
+
+
+def test_execute_emits_snapshot_for_initial_and_incremental_updates() -> None:
+    """Emit snapshots for both initial reads and subscription updates."""
+    runtime_configs = (
+        _build_runtime_config(101, "WTG_01"),
+        _build_runtime_config(102, "WTG_02"),
+    )
+    acquisition_port = ConcurrentFakeSourceAcquisitionPort()
+    emitter = FakeSnapshotEmitter()
+    use_case = SubscribeSourceStateUseCase(
+        acquisition_definition_port=FakeAcquisitionDefinitionPort(
+            {
+                101: _build_definition("model_1", "WTG_01"),
+                102: _build_definition("model_2", "WTG_02"),
+            }
+        ),
+        acquisition_port_registry=FakeSourceAcquisitionPortRegistry({"opcua": acquisition_port}),
+        state_cache_port=FakeSourceStateCachePort(),
+        snapshot_emitter=emitter,
+    )
+
+    asyncio.run(use_case.execute(runtime_configs=runtime_configs, stop_event=Event()))
+
+    assert emitter.call_count == 4

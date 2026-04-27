@@ -71,16 +71,15 @@ def _build_snapshot() -> list[CachedSourceState]:
 
 def test_execute_reads_snapshot_and_publishes_assembled_message() -> None:
     """Read the snapshot, assemble one message, and publish it."""
-    publisher = CapturingPublisher("file_outbox")
+    publisher = CapturingPublisher("relational_outbox")
     use_case = EmitStateSnapshotUseCase(
         snapshot_reader_port=FakeSourceStateSnapshotReaderPort(_build_snapshot()),
-        publishers=[publisher],
+        publisher=publisher,
     )
 
-    results = use_case.execute()
+    result = use_case.execute()
 
-    assert len(results) == 1
-    assert results[0].success is True
+    assert result.success is True
     assert len(publisher.messages) == 1
     message = publisher.messages[0]
     assert message.message_type == "STATE_SNAPSHOT"
@@ -93,50 +92,43 @@ def test_execute_reads_snapshot_and_publishes_assembled_message() -> None:
 
 def test_execute_builds_valid_message_for_empty_snapshot() -> None:
     """Build and publish one empty-but-valid snapshot message."""
-    publisher = CapturingPublisher("file_outbox")
+    publisher = CapturingPublisher("relational_outbox")
     use_case = EmitStateSnapshotUseCase(
         snapshot_reader_port=FakeSourceStateSnapshotReaderPort([]),
-        publishers=[publisher],
+        publisher=publisher,
     )
 
-    results = use_case.execute()
+    result = use_case.execute()
 
-    assert len(results) == 1
-    assert results[0].success is True
+    assert result.success is True
     message = publisher.messages[0]
     assert message.item_count == 0
     assert message.items == []
 
 
-def test_execute_calls_multiple_publishers() -> None:
-    """Publish one snapshot through all enabled publishers."""
-    first = CapturingPublisher("file_outbox")
-    second = CapturingPublisher("redis_streams")
+def test_execute_uses_one_selected_publisher() -> None:
+    """Publish one snapshot through the configured publisher only."""
+    publisher = CapturingPublisher("redis_streams")
     use_case = EmitStateSnapshotUseCase(
         snapshot_reader_port=FakeSourceStateSnapshotReaderPort(_build_snapshot()),
-        publishers=[first, second],
+        publisher=publisher,
     )
 
-    results = use_case.execute()
+    result = use_case.execute()
 
-    assert [result.pipeline_name for result in results] == ["file_outbox", "redis_streams"]
-    assert all(result.success for result in results)
-    assert len(first.messages) == 1
-    assert len(second.messages) == 1
+    assert result.pipeline_name == "redis_streams"
+    assert result.success is True
+    assert len(publisher.messages) == 1
 
 
-def test_execute_keeps_other_publishers_running_when_one_fails() -> None:
-    """Keep publishing through other pipelines when one publisher fails."""
-    successful = CapturingPublisher("file_outbox")
+def test_execute_returns_failure_result_when_publisher_raises() -> None:
+    """Return one failure result when the configured publisher raises."""
     use_case = EmitStateSnapshotUseCase(
         snapshot_reader_port=FakeSourceStateSnapshotReaderPort(_build_snapshot()),
-        publishers=[FailingPublisher(), successful],
+        publisher=FailingPublisher(),
     )
 
-    results = use_case.execute()
+    result = use_case.execute()
 
-    assert len(results) == 2
-    assert results[0].success is False
-    assert results[0].error_message == "publisher boom"
-    assert results[1].success is True
-    assert len(successful.messages) == 1
+    assert result.success is False
+    assert result.error_message == "publisher boom"

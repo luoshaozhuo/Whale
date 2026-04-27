@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import csv
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
 
-from whale.ingest.adapters.state.file_source_state_cache import (
-    FileSourceStateCache,
-)
+from whale.ingest.ports.state import ModeAwareSourceStateCachePort
 from whale.ingest.ports.source.source_acquisition_port import SourceAcquisitionPort
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
 from whale.ingest.usecases.dtos.acquisition_item_data import AcquisitionItemData
@@ -100,6 +96,42 @@ class FakeSourceStateCachePort:
     ) -> int:
         """Capture the call and return the configured update count."""
         self.calls.append((model_id, list(acquired_states)))
+        return self._updated_count
+
+
+class FakeSnapshotEmitter:
+    """Capture snapshot emission calls for use-case tests."""
+
+    def __init__(self) -> None:
+        """Initialize the call counter."""
+        self.call_count = 0
+
+    def execute(self) -> object:
+        """Record one snapshot emission call."""
+        self.call_count += 1
+        return {"emitted": True}
+
+
+class FakeModeAwareSourceStateCachePort(ModeAwareSourceStateCachePort):
+    """Capture mode-aware cache updates for use-case tests."""
+
+    def __init__(self, updated_count: int = 0) -> None:
+        """Store the count returned from state-cache refresh calls."""
+        self._updated_count = updated_count
+        self.calls_by_mode: list[tuple[str, str, list[AcquiredNodeState]]] = []
+
+    def store_many(self, model_id: str, acquired_states: list[AcquiredNodeState]) -> int:
+        """Capture default updates as ONCE mode refreshes."""
+        return self.store_many_for_mode("ONCE", model_id, acquired_states)
+
+    def store_many_for_mode(
+        self,
+        acquisition_mode: str,
+        model_id: str,
+        acquired_states: list[AcquiredNodeState],
+    ) -> int:
+        """Capture mode-specific cache refresh calls."""
+        self.calls_by_mode.append((acquisition_mode, model_id, list(acquired_states)))
         return self._updated_count
 
 
@@ -241,12 +273,6 @@ def _assert_result_execution_window(
     assert result_ended_at.tzinfo is not None
 
 
-def _read_csv_rows(path: Path) -> list[dict[str, str]]:
-    """Read CSV records produced by the file-backed repository."""
-    with path.open("r", encoding="utf-8", newline="") as input_file:
-        return list(csv.DictReader(input_file))
-
-
 def test_execute_returns_failed_when_definition_is_missing() -> None:
     """Return FAILED when the acquisition definition cannot be built."""
     runtime_config = _build_runtime_config()
@@ -267,26 +293,25 @@ def test_execute_returns_failed_when_definition_is_missing() -> None:
 
 
 @pytest.mark.parametrize(
-    ("acquisition_mode", "interval_ms", "expected_filename"),
+    ("acquisition_mode", "interval_ms"),
     [
-        ("ONCE", 0, "read-results.csv"),
-        ("POLLING", 100, "polling-results.csv"),
+        ("ONCE", 0),
+        ("POLLING", 100),
     ],
 )
-def test_execute_routes_pull_results_to_mode_specific_capture_file(
-    tmp_path: Path,
+def test_execute_routes_pull_results_to_mode_specific_cache_call(
     acquisition_mode: str,
     interval_ms: int,
-    expected_filename: str,
 ) -> None:
-    """Write pull results into the file associated with the runtime acquisition mode."""
+    """Tag pull updates with the runtime acquisition mode when cache supports it."""
     runtime_config = _build_runtime_config_for_mode(acquisition_mode, interval_ms)
+    state_cache_port = FakeModeAwareSourceStateCachePort(updated_count=1)
     use_case = PullSourceStateUseCase(
         acquisition_definition_port=FakeAcquisitionDefinitionPort(_build_definition()),
         acquisition_port_registry=FakeSourceAcquisitionPortRegistry(
             {"opcua": FakeSourceAcquisitionPort(_build_states())}
         ),
-        state_cache_port=FileSourceStateCache(tmp_path),
+        state_cache_port=state_cache_port,
     )
 
     window_started_at = datetime.now(tz=UTC)
@@ -294,11 +319,12 @@ def test_execute_routes_pull_results_to_mode_specific_capture_file(
     window_ended_at = datetime.now(tz=UTC)
 
     assert result.status is AcquisitionStatus.SUCCEEDED
-    records = _read_csv_rows(tmp_path / expected_filename)
-    assert [record["variable_key"] for record in records] == ["TotW"]
-    assert [record["device_code"] for record in records] == ["WTG_01"]
-    assert [record["model_id"] for record in records] == ["goldwind_gw121_opcua"]
-    assert all(record["source_observed_at"] for record in records)
+    assert len(state_cache_port.calls_by_mode) == 1
+    call_mode, model_id, states = state_cache_port.calls_by_mode[0]
+    assert call_mode == acquisition_mode
+    assert model_id == "goldwind_gw121_opcua"
+    assert [state.node_key for state in states] == ["TotW"]
+    assert [state.source_id for state in states] == ["WTG_01"]
     _assert_result_execution_window(
         result.started_at, result.ended_at, window_started_at, window_ended_at
     )
@@ -326,9 +352,26 @@ def test_execute_returns_succeeded_and_persists_states() -> None:
     _assert_result_execution_window(
         result.started_at, result.ended_at, window_started_at, window_ended_at
     )
-    assert len(acquisition_port.requests) == 1
-    assert state_cache_port.calls == [("goldwind_gw121_opcua", states)]
+
+
+def test_execute_emits_snapshot_once_when_any_runtime_config_succeeds() -> None:
+    """Emit one full snapshot once after successful cache refreshes."""
+    runtime_config = _build_runtime_config()
+    states = _build_states()
+    emitter = FakeSnapshotEmitter()
+    use_case = PullSourceStateUseCase(
+        acquisition_definition_port=FakeAcquisitionDefinitionPort(_build_definition()),
+        acquisition_port_registry=FakeSourceAcquisitionPortRegistry(
+            {"opcua": FakeSourceAcquisitionPort(states)}
+        ),
+        state_cache_port=FakeSourceStateCachePort(updated_count=1),
+        snapshot_emitter=emitter,
+    )
+
+    result = asyncio.run(use_case.execute([runtime_config]))[0]
+
     assert result.status is AcquisitionStatus.SUCCEEDED
+    assert emitter.call_count == 1
 
 
 def test_execute_returns_empty_when_acquisition_has_no_results() -> None:

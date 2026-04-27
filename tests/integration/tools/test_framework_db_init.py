@@ -45,6 +45,7 @@ def test_init_db_creates_all_framework_tables(
         "acquisition_task",
         "acquisition_variable",
         "device",
+        "state_snapshot_outbox",
         "substation",
         "variable_state",
     }

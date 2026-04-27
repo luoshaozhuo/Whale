@@ -2,51 +2,154 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from whale.ingest.config import (
-    _default_state_cache_backend,
-    _resolve_runtime_environment,
+    CONFIG,
+    DEFAULT_SQLITE_DB_PATH,
+    EnvironmentConfig,
+    KafkaMessageConfig,
+    PostgresDatabaseConfig,
+    RedisStateCacheConfig,
+    RelationalOutboxMessageConfig,
+    RelationalStateCacheConfig,
+    SqliteDatabaseConfig,
+    _build_config,
+    _resolve_database_backend,
+    _resolve_message_backend,
     _resolve_state_cache_backend,
 )
 
 
-def test_resolve_runtime_environment_defaults_to_development() -> None:
-    """Default the ingest runtime environment to development."""
-    assert _resolve_runtime_environment(None) == "development"
-    assert _resolve_runtime_environment("") == "development"
+def test_resolve_database_backend_defaults_to_sqlite() -> None:
+    """Default the database backend to sqlite when unset."""
+    assert _resolve_database_backend(None) == "sqlite"
+    assert _resolve_database_backend("") == "sqlite"
 
 
-@pytest.mark.parametrize(
-    ("environment", "expected_backend"),
-    [
-        ("test", "sqlite"),
-        ("development", "sqlite"),
-        ("production", "redis"),
-    ],
-)
-def test_default_state_cache_backend_depends_on_environment(
-    environment: str,
-    expected_backend: str,
-) -> None:
-    """Resolve one environment-specific default state-cache backend."""
-    assert _default_state_cache_backend(environment) == expected_backend
-    assert _resolve_state_cache_backend(environment, None) == expected_backend
+def test_resolve_state_cache_backend_defaults_to_relational() -> None:
+    """Default the state-cache backend to relational when unset."""
+    assert _resolve_state_cache_backend(None) == "relational"
+    assert _resolve_state_cache_backend("") == "relational"
 
 
-def test_state_cache_backend_override_can_switch_backend() -> None:
-    """Allow explicit backend overrides on top of environment defaults."""
-    assert _resolve_state_cache_backend("production", "sqlite") == "sqlite"
-    assert _resolve_state_cache_backend("development", "redis") == "redis"
+def test_resolve_message_backend_defaults_to_relational_outbox() -> None:
+    """Default the message backend to relational_outbox when unset."""
+    assert _resolve_message_backend(None) == "relational_outbox"
+    assert _resolve_message_backend("") == "relational_outbox"
 
 
-def test_resolve_runtime_environment_rejects_unknown_value() -> None:
-    """Reject unsupported runtime environments."""
-    with pytest.raises(RuntimeError, match="Unsupported WHALE_INGEST_ENV value"):
-        _resolve_runtime_environment("staging")
+@pytest.mark.parametrize("value", ["sqlite", "postgresql"])
+def test_resolve_database_backend_accepts_supported_values(value: str) -> None:
+    """Accept all supported database backend values."""
+    assert _resolve_database_backend(value) == value
+
+
+@pytest.mark.parametrize("value", ["relational", "redis"])
+def test_resolve_state_cache_backend_accepts_supported_values(value: str) -> None:
+    """Accept all supported state-cache backend values."""
+    assert _resolve_state_cache_backend(value) == value
+
+
+@pytest.mark.parametrize("value", ["relational_outbox", "redis_streams", "kafka"])
+def test_resolve_message_backend_accepts_supported_values(value: str) -> None:
+    """Accept all supported message backend values."""
+    assert _resolve_message_backend(value) == value
+
+
+def test_resolve_database_backend_rejects_unknown_value() -> None:
+    """Reject unsupported database backend values."""
+    with pytest.raises(RuntimeError, match="Unsupported WHALE_INGEST_DATABASE_BACKEND"):
+        _resolve_database_backend("mysql")
 
 
 def test_resolve_state_cache_backend_rejects_unknown_value() -> None:
-    """Reject unsupported state-cache backend overrides."""
+    """Reject unsupported state-cache backend values."""
     with pytest.raises(RuntimeError, match="Unsupported WHALE_INGEST_STATE_CACHE_BACKEND"):
-        _resolve_state_cache_backend("development", "memory")
+        _resolve_state_cache_backend("memory")
+
+
+def test_resolve_message_backend_rejects_unknown_value() -> None:
+    """Reject unsupported message backend values."""
+    with pytest.raises(RuntimeError, match="Unsupported WHALE_INGEST_MESSAGE_BACKEND"):
+        _resolve_message_backend("rabbitmq")
+
+
+def test_build_config_defaults_to_lightweight_backends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Build a fully local config when no backend env vars are set."""
+    monkeypatch.delenv("WHALE_INGEST_DATABASE_BACKEND", raising=False)
+    monkeypatch.delenv("WHALE_INGEST_STATE_CACHE_BACKEND", raising=False)
+    monkeypatch.delenv("WHALE_INGEST_MESSAGE_BACKEND", raising=False)
+
+    config = _build_config()
+
+    assert isinstance(config, EnvironmentConfig)
+    assert isinstance(config.database, SqliteDatabaseConfig)
+    assert Path(str(config.database.database)) == DEFAULT_SQLITE_DB_PATH
+    assert isinstance(config.state_cache, RelationalStateCacheConfig)
+    assert isinstance(config.message, RelationalOutboxMessageConfig)
+
+
+def test_build_config_reports_missing_postgres_env_vars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """List missing PostgreSQL variables clearly when building with postgresql backend."""
+    monkeypatch.setenv("WHALE_INGEST_DATABASE_BACKEND", "postgresql")
+    monkeypatch.setenv("WHALE_INGEST_STATE_CACHE_BACKEND", "redis")
+    for name in (
+        "WHALE_INGEST_DB_HOST",
+        "WHALE_INGEST_DB_NAME",
+        "WHALE_INGEST_DB_USERNAME",
+        "WHALE_INGEST_DB_PASSWORD",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(RuntimeError, match="WHALE_INGEST_DB_HOST, WHALE_INGEST_DB_NAME"):
+        _build_config()
+
+
+def test_build_config_rejects_relational_state_cache_without_sqlite_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject relational state-cache selections that do not use SQLite storage."""
+    monkeypatch.setenv("WHALE_INGEST_DATABASE_BACKEND", "postgresql")
+    monkeypatch.setenv("WHALE_INGEST_STATE_CACHE_BACKEND", "relational")
+
+    with pytest.raises(RuntimeError, match="requires the sqlite database backend"):
+        _build_config()
+
+
+def test_build_config_assembles_redis_and_kafka_backends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Build a config with postgresql + redis + kafka when env vars are set."""
+    monkeypatch.setenv("WHALE_INGEST_DATABASE_BACKEND", "postgresql")
+    monkeypatch.setenv("WHALE_INGEST_STATE_CACHE_BACKEND", "redis")
+    monkeypatch.setenv("WHALE_INGEST_MESSAGE_BACKEND", "kafka")
+    monkeypatch.setenv("WHALE_INGEST_DB_HOST", "localhost")
+    monkeypatch.setenv("WHALE_INGEST_DB_NAME", "whale_ingest")
+    monkeypatch.setenv("WHALE_INGEST_DB_USERNAME", "whale")
+    monkeypatch.setenv("WHALE_INGEST_DB_PASSWORD", "whale")
+    monkeypatch.setenv("WHALE_INGEST_REDIS_HOST", "localhost")
+    monkeypatch.setenv("WHALE_INGEST_REDIS_STATE_HASH_KEY", "whale:ingest:state")
+    monkeypatch.setenv("WHALE_INGEST_STATION_ID", "station-test-001")
+    monkeypatch.setenv("WHALE_INGEST_KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    monkeypatch.setenv("WHALE_INGEST_KAFKA_TOPIC", "whale.ingest.state_snapshot.v1")
+
+    config = _build_config()
+
+    assert isinstance(config.database, PostgresDatabaseConfig)
+    assert isinstance(config.state_cache, RedisStateCacheConfig)
+    assert isinstance(config.message, KafkaMessageConfig)
+
+
+def test_config_module_level_object_is_valid() -> None:
+    """Expose a valid top-level CONFIG object at import time."""
+    assert isinstance(CONFIG, EnvironmentConfig)
+    assert CONFIG.database_engine.pool_size == 10
+    assert CONFIG.database_engine.pool_pre_ping is True
+    assert CONFIG.state_cache_backend == CONFIG.state_cache.backend

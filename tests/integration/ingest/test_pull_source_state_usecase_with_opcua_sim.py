@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import csv
 import socket
 import time
 from contextlib import closing
@@ -14,14 +13,12 @@ import pytest
 
 from tools.opcua_sim.models import OpcUaServerConfig
 from tools.opcua_sim.server_runtime import OpcUaServerRuntime
+from whale.ingest.ports.state import ModeAwareSourceStateCachePort
 from whale.ingest.adapters.source.opcua_source_acquisition_adapter import (
     OpcUaSourceAcquisitionAdapter,
 )
 from whale.ingest.adapters.source.static_source_acquisition_port_registry import (
     StaticSourceAcquisitionPortRegistry,
-)
-from whale.ingest.adapters.state.file_source_state_cache import (
-    FileSourceStateCache,
 )
 from whale.ingest.usecases.dtos.acquisition_item_data import AcquisitionItemData
 from whale.ingest.usecases.dtos.acquisition_status import AcquisitionStatus
@@ -47,7 +44,65 @@ TEST_INTERVAL_SECONDS = 0.1
 TEST_INTERVAL_MS = int(TEST_INTERVAL_SECONDS * 1000)
 MODEL_ID = "goldwind_gw121_opcua"
 VARIABLE_KEYS = ("TotW", "Spd", "WS")
-TEST_OUTPUT_DIR = Path("tests/tmp/ingest")
+
+
+class InMemoryModeCaptureStateCache(ModeAwareSourceStateCachePort):
+    """Capture mode-tagged state refreshes in memory for integration tests."""
+
+    def __init__(self) -> None:
+        """Initialize one in-memory buffer per acquisition mode."""
+        self._rows_by_mode: dict[str, list[dict[str, str]]] = {
+            "ONCE": [],
+            "POLLING": [],
+            "SUBSCRIPTION": [],
+        }
+
+    def store_many(self, model_id: str, acquired_states: list[AcquiredNodeState]) -> int:
+        """Capture default state refreshes as ONCE mode records."""
+        return self.store_many_for_mode("ONCE", model_id, acquired_states)
+
+    def store_many_for_mode(
+        self,
+        acquisition_mode: str,
+        model_id: str,
+        acquired_states: list[AcquiredNodeState],
+    ) -> int:
+        """Capture one refresh batch for the provided acquisition mode."""
+        received_at = time.time()
+        rows = [
+            {
+                "device_code": state.source_id,
+                "model_id": model_id,
+                "variable_key": state.node_key,
+                "value": state.value,
+                "source_observed_at": state.observed_at.isoformat(),
+                "received_at": str(received_at),
+                "updated_at": str(received_at),
+            }
+            for state in acquired_states
+        ]
+        if rows:
+            self._rows_by_mode.setdefault(acquisition_mode, []).extend(rows)
+        return len(rows)
+
+    def latest_rows_by_key(self, acquisition_mode: str) -> dict[str, dict[str, str]]:
+        """Return one latest row per variable key for the given mode."""
+        latest: dict[str, dict[str, str]] = {}
+        for row in self._rows_by_mode.get(acquisition_mode, []):
+            latest[row["variable_key"]] = row
+        return latest
+
+    def latest_snapshot(self, acquisition_mode: str) -> tuple[float, float, float] | None:
+        """Return one numeric TotW/Spd/WS snapshot for the given mode."""
+        latest_rows_by_key = self.latest_rows_by_key(acquisition_mode)
+        if len(latest_rows_by_key) != len(VARIABLE_KEYS):
+            return None
+        values_by_key = {key: float(row["value"]) for key, row in latest_rows_by_key.items()}
+        return (
+            values_by_key["TotW"],
+            values_by_key["Spd"],
+            values_by_key["WS"],
+        )
 
 
 class StaticSourceAcquisitionDefinitionPort:
@@ -149,9 +204,9 @@ def _build_definition(endpoint: str) -> SourceAcquisitionDefinition:
 
 def _build_pull_use_case(
     definition: SourceAcquisitionDefinition,
-    state_cache_port: FileSourceStateCache,
+    state_cache_port: InMemoryModeCaptureStateCache,
 ) -> PullSourceStateUseCase:
-    """Build the pull use case with the real OPC UA adapter and file store."""
+    """Build the pull use case with the real OPC UA adapter and in-memory store."""
     return PullSourceStateUseCase(
         acquisition_definition_port=StaticSourceAcquisitionDefinitionPort(definition),
         acquisition_port_registry=StaticSourceAcquisitionPortRegistry(
@@ -163,9 +218,9 @@ def _build_pull_use_case(
 
 def _build_subscribe_use_case(
     definition: SourceAcquisitionDefinition,
-    state_cache_port: FileSourceStateCache,
+    state_cache_port: InMemoryModeCaptureStateCache,
 ) -> SubscribeSourceStateUseCase:
-    """Build the subscribe use case with the real OPC UA adapter and file store."""
+    """Build the subscribe use case with the real OPC UA adapter and in-memory store."""
     return SubscribeSourceStateUseCase(
         acquisition_definition_port=StaticSourceAcquisitionDefinitionPort(definition),
         acquisition_port_registry=StaticSourceAcquisitionPortRegistry(
@@ -175,48 +230,12 @@ def _build_subscribe_use_case(
     )
 
 
-def _build_file_store(output_path: Path) -> FileSourceStateCache:
-    """Build the file-backed store and clear the current test output file."""
-    TEST_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    if output_path.exists():
-        output_path.unlink()
-    return FileSourceStateCache(TEST_OUTPUT_DIR)
-
-
-def _read_rows(output_path: Path) -> list[dict[str, str]]:
-    """Read all captured rows from one CSV output file."""
-    if not output_path.exists():
-        return []
-    with output_path.open("r", encoding="utf-8", newline="") as input_file:
-        return list(csv.DictReader(input_file))
-
-
-def _read_snapshot(output_path: Path) -> tuple[float, float, float] | None:
-    """Read one numeric snapshot from the latest CSV rows for every test variable."""
-    rows = _read_rows(output_path)
-    if len(rows) < len(VARIABLE_KEYS):
-        return None
-
-    latest_rows_by_key: dict[str, dict[str, str]] = {}
-    for row in rows:
-        latest_rows_by_key[row["variable_key"]] = row
-    if len(latest_rows_by_key) != len(VARIABLE_KEYS):
-        return None
-
-    values_by_key = {key: float(row["value"]) for key, row in latest_rows_by_key.items()}
-    return (
-        values_by_key["TotW"],
-        values_by_key["Spd"],
-        values_by_key["WS"],
-    )
-
-
-def _assert_rows_written(output_path: Path) -> None:
-    """Assert that one CSV output file contains captured rows for every test variable."""
-    rows = _read_rows(output_path)
-    latest_rows_by_key: dict[str, dict[str, str]] = {}
-    for row in rows:
-        latest_rows_by_key[row["variable_key"]] = row
+def _assert_rows_written(
+    state_cache_port: InMemoryModeCaptureStateCache,
+    acquisition_mode: str,
+) -> None:
+    """Assert that one mode contains captured rows for every test variable."""
+    latest_rows_by_key = state_cache_port.latest_rows_by_key(acquisition_mode)
 
     assert sorted(latest_rows_by_key) == ["Spd", "TotW", "WS"]
     assert all(row["device_code"] == "WTG_01" for row in latest_rows_by_key.values())
@@ -240,7 +259,7 @@ def _assert_series_changed(
 async def _run_polling_for_duration(
     use_case: PullSourceStateUseCase,
     runtime_config: SourceRuntimeConfigData,
-    output_path: Path,
+    state_cache_port: InMemoryModeCaptureStateCache,
 ) -> list[tuple[float, tuple[float, float, float]]]:
     """Execute repeated pull acquisition for the configured duration."""
     snapshots: list[tuple[float, tuple[float, float, float]]] = []
@@ -254,7 +273,7 @@ async def _run_polling_for_duration(
         result = (await use_case.execute([runtime_config]))[0]
         assert result.status is AcquisitionStatus.SUCCEEDED
 
-        snapshot = _read_snapshot(output_path)
+        snapshot = state_cache_port.latest_snapshot(runtime_config.acquisition_mode)
         if snapshot is not None:
             snapshots.append((elapsed, snapshot))
 
@@ -264,7 +283,7 @@ async def _run_polling_for_duration(
 async def _run_subscription_for_duration(
     use_case: SubscribeSourceStateUseCase,
     runtime_config: SourceRuntimeConfigData,
-    output_path: Path,
+    state_cache_port: InMemoryModeCaptureStateCache,
 ) -> list[tuple[float, tuple[float, float, float]]]:
     """Run subscription acquisition for the configured duration and sample CSV output."""
     stop_event = Event()
@@ -279,7 +298,7 @@ async def _run_subscription_for_duration(
             if elapsed >= TEST_DURATION_SECONDS:
                 break
 
-            snapshot = _read_snapshot(output_path)
+            snapshot = state_cache_port.latest_snapshot(runtime_config.acquisition_mode)
             if snapshot is not None:
                 snapshots.append((elapsed, snapshot))
     finally:
@@ -291,9 +310,8 @@ async def _run_subscription_for_duration(
 
 @pytest.mark.integration
 def test_pull_source_state_once_writes_rows_to_sqlite() -> None:
-    """Write one latest-state snapshot into the file store for one ONCE acquisition."""
-    output_path = TEST_OUTPUT_DIR / "read-results.csv"
-    store_port = _build_file_store(output_path)
+    """Write one latest-state snapshot into the in-memory store for one ONCE acquisition."""
+    store_port = InMemoryModeCaptureStateCache()
     endpoint = f"opc.tcp://127.0.0.1:{_get_free_port()}"
     definition = _build_definition(endpoint)
     runtime_config = _build_runtime_config(acquisition_mode="ONCE", interval_ms=0)
@@ -314,14 +332,13 @@ def test_pull_source_state_once_writes_rows_to_sqlite() -> None:
     assert result.runtime_config_id == 101
     assert result.status is AcquisitionStatus.SUCCEEDED
     assert result.error_message is None
-    _assert_rows_written(output_path)
+    _assert_rows_written(store_port, "ONCE")
 
 
 @pytest.mark.integration
 def test_pull_source_state_polling_writes_changing_rows_to_sqlite_for_ten_seconds() -> None:
-    """Continuously poll for 10 seconds and persist changing simulator values into CSV."""
-    output_path = TEST_OUTPUT_DIR / "polling-results.csv"
-    store_port = _build_file_store(output_path)
+    """Continuously poll for 10 seconds and persist changing simulator values in memory."""
+    store_port = InMemoryModeCaptureStateCache()
     endpoint = f"opc.tcp://127.0.0.1:{_get_free_port()}"
     definition = _build_definition(endpoint)
     runtime_config = _build_runtime_config(
@@ -340,17 +357,16 @@ def test_pull_source_state_polling_writes_changing_rows_to_sqlite_for_ten_second
             update_interval_seconds=TEST_INTERVAL_SECONDS,
         ),
     ):
-        snapshots = asyncio.run(_run_polling_for_duration(use_case, runtime_config, output_path))
+        snapshots = asyncio.run(_run_polling_for_duration(use_case, runtime_config, store_port))
 
-    _assert_rows_written(output_path)
+    _assert_rows_written(store_port, "POLLING")
     _assert_series_changed(snapshots)
 
 
 @pytest.mark.integration
 def test_subscribe_source_state_writes_changing_rows_to_sqlite_for_ten_seconds() -> None:
-    """Continuously subscribe for 10 seconds and persist changing simulator values into CSV."""
-    output_path = TEST_OUTPUT_DIR / "subscription-results.csv"
-    store_port = _build_file_store(output_path)
+    """Continuously subscribe for 10 seconds and persist changing simulator values in memory."""
+    store_port = InMemoryModeCaptureStateCache()
     endpoint = f"opc.tcp://127.0.0.1:{_get_free_port()}"
     definition = _build_definition(endpoint)
     runtime_config = _build_runtime_config(
@@ -370,8 +386,8 @@ def test_subscribe_source_state_writes_changing_rows_to_sqlite_for_ten_seconds()
         ),
     ):
         snapshots = asyncio.run(
-            _run_subscription_for_duration(use_case, runtime_config, output_path)
+            _run_subscription_for_duration(use_case, runtime_config, store_port)
         )
 
-    _assert_rows_written(output_path)
+    _assert_rows_written(store_port, "SUBSCRIPTION")
     _assert_series_changed(snapshots)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import sys
 from pathlib import Path
@@ -18,6 +19,25 @@ if str(SRC_ROOT) not in sys.path:
 
 from tools.opcua_sim.fleet_runtime import OpcUaFleetRuntime  # noqa: E402
 from tools.opcua_sim.server_runtime import OpcUaServerRuntime, load_server_config  # noqa: E402
+
+_VALID_STATE_CACHE_BACKENDS = frozenset({"relational", "redis"})
+_VALID_MESSAGE_BACKENDS = frozenset({"relational_outbox", "redis_streams", "kafka"})
+_VALID_DATABASE_BACKENDS = frozenset({"sqlite", "postgresql"})
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Ensure valid ingest backend env vars before test collection.
+
+    Shell-level env vars may carry stale or invalid values from previous
+    experiments. This hook corrects any invalid backend selections to safe
+    lightweight defaults before whale.ingest.config is first imported.
+    """
+    if os.environ.get("WHALE_INGEST_DATABASE_BACKEND", "") not in _VALID_DATABASE_BACKENDS:
+        os.environ["WHALE_INGEST_DATABASE_BACKEND"] = "sqlite"
+    if os.environ.get("WHALE_INGEST_STATE_CACHE_BACKEND", "") not in _VALID_STATE_CACHE_BACKENDS:
+        os.environ["WHALE_INGEST_STATE_CACHE_BACKEND"] = "relational"
+    if os.environ.get("WHALE_INGEST_MESSAGE_BACKEND", "") not in _VALID_MESSAGE_BACKENDS:
+        os.environ["WHALE_INGEST_MESSAGE_BACKEND"] = "relational_outbox"
 
 
 @pytest.fixture()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from typing import Protocol
 
 from whale.ingest.ports.source.source_acquisition_definition_port import (
     SourceAcquisitionDefinitionPort,
@@ -23,6 +24,13 @@ from whale.ingest.usecases.roles.pull_role import PullRole
 from whale.ingest.usecases.roles.state_update_role import StateUpdateRole
 
 
+class SnapshotEmitter(Protocol):
+    """Minimal snapshot emission contract used by the pull use case."""
+
+    def execute(self) -> object:
+        """Emit one full latest-state snapshot."""
+
+
 class PullSourceStateUseCase:
     """Pull source states and refresh the local latest-state cache."""
 
@@ -31,6 +39,7 @@ class PullSourceStateUseCase:
         acquisition_definition_port: SourceAcquisitionDefinitionPort,
         acquisition_port_registry: SourceAcquisitionPortRegistry,
         state_cache_port: SourceStateCachePort,
+        snapshot_emitter: SnapshotEmitter | None = None,
         max_in_flight: int = 8,
     ) -> None:
         """Store use-case dependencies.
@@ -40,6 +49,8 @@ class PullSourceStateUseCase:
             acquisition_port_registry: Protocol-to-adapter registry used to execute source
                 acquisition.
             state_cache_port: Port used to refresh the local latest-state cache.
+            snapshot_emitter: Optional emitter used to publish one full latest-state
+                snapshot after successful refreshes.
             max_in_flight: Maximum number of source pulls allowed concurrently.
         """
         if max_in_flight <= 0:
@@ -47,6 +58,7 @@ class PullSourceStateUseCase:
         self._acquisition_definition_port = acquisition_definition_port
         self._acquisition_port_registry = acquisition_port_registry
         self._update_role = StateUpdateRole(state_cache_port=state_cache_port)
+        self._snapshot_emitter = snapshot_emitter
         self._max_in_flight = max_in_flight
 
     async def execute(
@@ -62,7 +74,12 @@ class PullSourceStateUseCase:
             asyncio.create_task(self._execute_runtime_config(runtime_config, semaphore))
             for runtime_config in runtime_configs
         ]
-        return list(await asyncio.gather(*tasks))
+        results = list(await asyncio.gather(*tasks))
+        if self._snapshot_emitter is not None and any(
+            result.status is AcquisitionStatus.SUCCEEDED for result in results
+        ):
+            await asyncio.to_thread(self._snapshot_emitter.execute)
+        return results
 
     async def _execute_runtime_config(
         self,

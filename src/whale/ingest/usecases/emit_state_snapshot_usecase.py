@@ -15,19 +15,19 @@ from whale.ingest.usecases.roles.state_snapshot_read_role import StateSnapshotRe
 
 
 class EmitStateSnapshotUseCase:
-    """Read the current full snapshot and publish it through enabled pipelines."""
+    """Read the current full snapshot and publish it through the configured backend."""
 
     def __init__(
         self,
         snapshot_reader_port: SourceStateSnapshotReaderPort,
-        publishers: list[MessagePublisherPort],
+        publisher: MessagePublisherPort,
     ) -> None:
         """Store the snapshot-reader and publisher dependencies."""
         self._read_role = StateSnapshotReadRole(snapshot_reader_port)
         self._assembler = StateSnapshotMessageAssembler()
-        self._publish_role = StateSnapshotPublishRole(publishers)
+        self._publish_role = StateSnapshotPublishRole(publisher)
 
-    def execute(self) -> list[MessagePublishResult]:
+    def execute(self) -> MessagePublishResult:
         """Read, assemble, and publish the current full latest-state snapshot."""
         snapshot = self._read_role.read_snapshot()
         message = self._assembler.assemble(snapshot)
