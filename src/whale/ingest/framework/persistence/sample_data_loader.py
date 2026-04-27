@@ -26,6 +26,7 @@ DEFAULT_SAMPLE_ITEM_KEYS = ("TotW", "Spd", "WS")
 DEFAULT_SAMPLE_SUBSTATION = "DEMO_SUBSTATION"
 DEFAULT_SAMPLE_MODEL_ID = "goldwind_gw121_opcua"
 DEFAULT_SAMPLE_MODEL_VERSION = "v1"
+DEFAULT_STANDARD_MODEL_ID = "gbt_30966_opcua"
 
 
 def load_sample_data(
@@ -133,3 +134,55 @@ def _parse_endpoint(endpoint: str) -> tuple[str | None, int | None]:
     """Split one configured endpoint into host and port fields."""
     parsed = urlsplit(endpoint)
     return parsed.hostname, parsed.port
+
+
+def load_standard_sample_data(
+    session: Session,
+    connection_config_path: Path,
+    *,
+    substation_name: str = DEFAULT_SAMPLE_SUBSTATION,
+    model_id: str = DEFAULT_STANDARD_MODEL_ID,
+    model_version: str = DEFAULT_SAMPLE_MODEL_VERSION,
+) -> None:
+    """Load sample data using the full GB/T 30966.2 field set (~500 fields)."""
+    from tools.opcua_sim.templates.gbt_30966_fields import ALL_LOGICAL_NODES
+
+    namespace_uri = _resolve_primary_namespace_uri(
+        connection_config_path.parent / "OPCUANodeSet.xml"
+    )
+    _load_substation_sample(session, name=substation_name)
+    _load_standard_acquisition_model_samples(session, model_id=model_id, model_version=model_version)
+    session.flush()
+    _load_device_and_task_samples(session, connection_config_path, namespace_uri)
+
+
+def _load_substation_sample(session: Session, *, name: str = DEFAULT_SAMPLE_SUBSTATION) -> None:
+    """Load one default sample substation with configurable name."""
+    session.add(SubstationORM(name=name))
+
+
+def _load_standard_acquisition_model_samples(
+    session: Session,
+    *,
+    model_id: str = DEFAULT_STANDARD_MODEL_ID,
+    model_version: str = DEFAULT_SAMPLE_MODEL_VERSION,
+) -> None:
+    """Load all GB/T 30966.2 fields as acquisition variables."""
+    from tools.opcua_sim.templates.gbt_30966_fields import ALL_LOGICAL_NODES
+
+    model = AcquisitionModelORM(model_id=model_id, model_version=model_version)
+    session.add(model)
+    session.flush()
+
+    for node in ALL_LOGICAL_NODES:
+        for field in node.fields:
+            session.add(
+                AcquisitionVariableORM(
+                    model_id=int(model.id),
+                    variable_key=field.key,
+                    locator=f"s={{device_code}}.{field.key}",
+                    locator_type="node_path",
+                    display_name=f"{field.desc} ({field.unit})",
+                    variable_params={},
+                )
+            )

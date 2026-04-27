@@ -22,3 +22,4 @@ class OpcUaServerConfig:
     security_policy: str
     security_mode: str
     update_interval_seconds: float
+    variable_values: dict[str, float] | None = None

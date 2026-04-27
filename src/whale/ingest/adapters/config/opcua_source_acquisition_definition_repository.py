@@ -87,33 +87,47 @@ class OpcUaSourceAcquisitionDefinitionRepository(SourceAcquisitionDefinitionPort
                 )
             )
 
-        if not variable_rows:
-            raise LookupError(
-                "No acquisition variables were found for "
-                f"model `{task.model_id}` version `{task.model_version}`."
-            )
+            if not variable_rows:
+                raise LookupError(
+                    "No acquisition variables were found for "
+                    f"model `{task.model_id}` version `{task.model_version}`."
+                )
+
+            # Extract values while session is still active (avoid DetachedInstanceError)
+            _model_id = task.model_id
+            _device_code = device.device_code
+            _host = task.host
+            _port = task.port
+            _username = task.username
+            _password = task.password
+            _connection_params = dict(task.connection_params)
+            _endpoint = None
+            if _host and _port:
+                _endpoint = f"opc.tcp://{_host}:{_port}"
+            _items = [
+                AcquisitionItemData(
+                    key=row.variable_key,
+                    locator=row.locator.format(
+                        device_code=_device_code,
+                        source_id=_device_code,
+                        key=row.variable_key,
+                    ),
+                    locator_type=row.locator_type,
+                    display_name=row.display_name,
+                    params=dict(row.variable_params),
+                )
+                for row in variable_rows
+            ]
 
         return SourceAcquisitionDefinition(
-            model_id=task.model_id,
+            model_id=_model_id,
             connection=SourceConnectionData(
-                host=task.host,
-                port=task.port,
-                username=task.username,
-                password=task.password,
-                params=dict(task.connection_params),
+                endpoint=_endpoint,
+                host=_host,
+                port=_port,
+                username=_username,
+                password=_password,
+                params=_connection_params,
             ),
-            items=[
-                AcquisitionItemData(
-                    key=variable_row.variable_key,
-                    locator=variable_row.locator.format(
-                        device_code=device.device_code,
-                        source_id=device.device_code,
-                        key=variable_row.variable_key,
-                    ),
-                    locator_type=variable_row.locator_type,
-                    display_name=variable_row.display_name,
-                    params=dict(variable_row.variable_params),
-                )
-                for variable_row in variable_rows
-            ],
+            items=_items,
         )

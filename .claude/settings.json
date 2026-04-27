@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tesseract --version)",
+      "Bash(tesseract --list-langs)",
+      "Read(//home/luosh/miniconda3/envs/projecta/share/tessdata/**)",
+      "Bash(/home/luosh/miniconda3/envs/projecta/bin/python)",
+      "Bash(/home/luosh/miniconda3/envs/projecta/bin/python -c ' *)"
+    ]
+  }
+}

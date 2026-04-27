@@ -42,8 +42,7 @@ def build_simulated_variable_value(
     phase_step_degrees: float = DEFAULT_PHASE_STEP_DEGREES,
 ) -> float:
     """Build one simulated value from the variable mean, noise and phase-shifted sine wave."""
-    phase_index = tuple(DEFAULT_VARIABLE_VALUES).index(variable_name)
-    phase_radians = math.radians(phase_index * phase_step_degrees)
+    phase_radians = math.radians((hash(variable_name) % 360) * phase_step_degrees)
     sine_component = (
         abs(mean)
         * amplitude_ratio
@@ -94,6 +93,7 @@ class OpcUaServerRuntime:
         nodeset_path: str | Path,
         config: OpcUaServerConfig,
         namespace_uri: str = DEFAULT_NAMESPACE_URI,
+        variable_values: dict[str, float] | None = None,
     ) -> None:
         """Store immutable bootstrap inputs for the simulator runtime.
 
@@ -101,10 +101,12 @@ class OpcUaServerRuntime:
             nodeset_path: Path to the NodeSet XML used to populate the server.
             config: Endpoint configuration resolved from the YAML file.
             namespace_uri: Custom namespace URI expected inside the NodeSet.
+            variable_values: Override DEFAULT_VARIABLE_VALUES for simulation.
         """
         self._nodeset_path = Path(nodeset_path)
         self._config = config
         self._namespace_uri = namespace_uri
+        self._variable_values = variable_values
         self._server: Server | None = None
         self._stop_updates = threading.Event()
         self._update_thread: threading.Thread | None = None
@@ -204,20 +206,25 @@ class OpcUaServerRuntime:
             self._update_thread = None
 
     def _build_variable_specs(self, server: Server) -> dict[str, tuple[str, float]]:
-        """Build the per-variable name and mean map from the default simulation values."""
+        """Build the per-variable name and mean map from the configured variable values."""
         namespace_index = server.get_namespace_index(self._namespace_uri)
         turbine = server.nodes.objects.get_child(
             [f"{namespace_index}:WindFarm", f"{namespace_index}:{self._config.name}"]
+        )
+        variable_values = (
+            self._variable_values
+            if self._variable_values is not None
+            else DEFAULT_VARIABLE_VALUES
         )
         variable_specs: dict[str, tuple[str, float]] = {}
 
         for child in turbine.get_children():
             variable_name = child.read_browse_name().Name
-            if variable_name not in DEFAULT_VARIABLE_VALUES:
+            if variable_name not in variable_values:
                 continue
             variable_specs[child.nodeid.to_string()] = (
                 variable_name,
-                DEFAULT_VARIABLE_VALUES[variable_name],
+                variable_values[variable_name],
             )
 
         return variable_specs

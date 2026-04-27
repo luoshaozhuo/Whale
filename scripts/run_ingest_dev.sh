@@ -28,14 +28,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${ROOT_DIR}/docker-compose.ingest-dev.yaml"
-ENV_FILE="${ROOT_DIR}/.env.ingest.local"
+ENV_FILE="${ROOT_DIR}/.env.ingest.example"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
-  ENV_FILE="${ROOT_DIR}/.env.ingest.example"
-fi
-
-if [[ ! -f "${ENV_FILE}" ]]; then
-  echo "Missing ingest environment file. Expected .env.ingest.local or .env.ingest.example." >&2
+  echo "Missing ingest environment file: ${ENV_FILE}" >&2
   exit 1
 fi
 
