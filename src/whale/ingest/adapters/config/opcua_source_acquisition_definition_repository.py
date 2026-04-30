@@ -8,18 +8,6 @@ from contextlib import AbstractContextManager
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from whale.ingest.framework.persistence.orm.acquisition_model_orm import (
-    AcquisitionModelORM,
-)
-from whale.ingest.framework.persistence.orm.acquisition_task_orm import (
-    AcquisitionTaskORM,
-)
-from whale.ingest.framework.persistence.orm.acquisition_variable_orm import (
-    AcquisitionVariableORM,
-)
-from whale.ingest.framework.persistence.orm.device_orm import (
-    DeviceORM,
-)
 from whale.ingest.framework.persistence.session import session_scope
 from whale.ingest.ports.source.source_acquisition_definition_port import (
     SourceAcquisitionDefinitionPort,
@@ -32,102 +20,99 @@ from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionDa
 from whale.ingest.usecases.dtos.source_runtime_config_data import (
     SourceRuntimeConfigData,
 )
+from whale.shared.persistence.orm import (
+    AcquisitionTask,
+    AssetInstance,
+    DA,
+    IED,
+)
 
 
 class OpcUaSourceAcquisitionDefinitionRepository(SourceAcquisitionDefinitionPort):
-    """Load OPC UA acquisition config from tasks, devices and acquisition models."""
+    """Load OPC UA acquisition config from tasks, assets and the IED → DA hierarchy."""
 
     def __init__(
         self,
         session_factory: Callable[[], AbstractContextManager[Session]] = session_scope,
     ) -> None:
-        """Store the session factory used for database access."""
         self._session_factory = session_factory
 
     def get_config(
         self,
         runtime_config: SourceRuntimeConfigData,
     ) -> SourceAcquisitionDefinition:
-        """Load one OPC UA runtime config into acquisition config data.
-
-        Args:
-            runtime_config: Runtime-config snapshot for the current refresh step.
-
-        Raises:
-            LookupError: Task, device, model or acquisition-variable rows are missing.
-        """
         with self._session_factory() as session:
-            task = session.get(AcquisitionTaskORM, runtime_config.runtime_config_id)
+            task = session.get(AcquisitionTask, runtime_config.runtime_config_id)
             if task is None:
                 raise LookupError(
                     f"Acquisition task `{runtime_config.runtime_config_id}` was not found."
                 )
 
-            device = session.get(DeviceORM, task.device_id)
-            if device is None:
-                raise LookupError(f"Device `{task.device_id}` was not found for task `{task.id}`.")
-
-            model = session.scalar(
-                select(AcquisitionModelORM).where(
-                    AcquisitionModelORM.model_id == task.model_id,
-                    AcquisitionModelORM.model_version == task.model_version,
-                )
-            )
-            if model is None:
+            asset = session.get(AssetInstance, task.asset_instance_id)
+            if asset is None:
                 raise LookupError(
-                    "No acquisition model was found for "
-                    f"model `{task.model_id}` version `{task.model_version}`."
+                    f"AssetInstance `{task.asset_instance_id}` was not found for task `{task.task_id}`."
                 )
 
-            variable_rows = list(
+            ied_id = task.ied_id
+            if ied_id is None:
+                raise LookupError(f"Task `{task.task_id}` has no ied_id configured.")
+
+            ied = session.get(IED, ied_id)
+            if ied is None:
+                raise LookupError(f"IED `{ied_id}` was not found for task `{task.task_id}`.")
+
+            # 查询该 IED 下所有启用的 DA（通过 DO → LN → LD join）
+            da_rows = list(
                 session.scalars(
-                    select(AcquisitionVariableORM)
-                    .where(AcquisitionVariableORM.model_id == model.id)
-                    .order_by(AcquisitionVariableORM.id)
+                    select(DA)
+                    .join(DA.do)
+                    .join(DA.do.ln)
+                    .join(DA.do.ln.ld)
+                    .where(
+                        DA.do.ln.ld.ied_id == ied_id,
+                        DA.enabled.is_(True),
+                    )
+                    .order_by(DA.da_id)
                 )
             )
-
-            if not variable_rows:
+            if not da_rows:
                 raise LookupError(
-                    "No acquisition variables were found for "
-                    f"model `{task.model_id}` version `{task.model_version}`."
+                    f"No enabled DA found under IED `{ied.ied_name}` for task `{task.task_id}`."
                 )
 
-            # Extract values while session is still active (avoid DetachedInstanceError)
-            _model_id = task.model_id
-            _device_code = device.device_code
-            _host = task.host
-            _port = task.port
-            _username = task.username
-            _password = task.password
-            _connection_params = dict(task.connection_params)
-            _endpoint = None
-            if _host and _port:
-                _endpoint = f"opc.tcp://{_host}:{_port}"
+            _model_id = ied.ied_name
+            _asset_code = asset.asset_code
+            _endpoint = task.endpoint
+            _params = dict(task.params)
             _items = [
                 AcquisitionItemData(
-                    key=row.variable_key,
-                    locator=row.locator.format(
-                        device_code=_device_code,
-                        source_id=_device_code,
-                        key=row.variable_key,
+                    key=row.da_name,
+                    locator=(
+                        row.locator.format(
+                            device_code=_asset_code,
+                            source_id=_asset_code,
+                            key=row.da_name,
+                        )
+                        if row.locator
+                        else ""
                     ),
                     locator_type=row.locator_type,
-                    display_name=row.display_name,
+                    display_name=row.display_name or row.da_name,
                     params=dict(row.variable_params),
                 )
-                for row in variable_rows
+                for row in da_rows
             ]
 
         return SourceAcquisitionDefinition(
             model_id=_model_id,
             connection=SourceConnectionData(
                 endpoint=_endpoint,
-                host=_host,
-                port=_port,
-                username=_username,
-                password=_password,
-                params=_connection_params,
+                host=None,
+                port=None,
+                username=None,
+                password=None,
+                params=_params,
             ),
             items=_items,
         )
