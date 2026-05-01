@@ -28,7 +28,7 @@ class LogicalNodeField:
     mean: float       # base simulation value
     unit: str         # engineering unit
     desc: str         # Chinese description from standard
-    data_type: str = "Double"  # OPC UA DataType
+    data_type: str = "FLOAT64"  # IEC 61850-7-2 basic type
     cdc: str = "MV"   # IEC 61850 Common Data Class
     mo: str = "O"     # M=Mandatory, O=Optional
 
@@ -40,14 +40,14 @@ class LogicalNodeDef:
     fields: list[LogicalNodeField] = field(default_factory=list)
 
 
-# CDC → Python type mapping
+# CDC → IEC 61850-7-2 basic type name
 _CDC_TYPE = {
-    "MV": "Double", "STV": "Double", "CMD": "Double", "SPC": "Double",
-    "SPV": "Double", "INS": "Double", "INC": "Double", "BCR": "Double",
-    "WYE": "Double", "DEL": "Double", "ACT": "Double", "ACD": "Double",
-    "ENC": "Double", "ENG": "Double", "DPL": "Double", "DPC": "Double",
-    "HMV": "Double", "HST": "Double", "CSD": "Double", "CST": "Double",
-    "ISC": "Double", "LPL": "Double", "LPC": "Double",
+    "MV": "FLOAT64", "STV": "INT32", "CMD": "INT32", "SPC": "INT32",
+    "SPV": "FLOAT64", "INS": "INT32", "INC": "INT32", "BCR": "INT32",
+    "WYE": "FLOAT64", "DEL": "FLOAT64", "ACT": "FLOAT64", "ACD": "FLOAT64",
+    "ENC": "INT32", "ENG": "INT32", "DPL": "INT32", "DPC": "INT32",
+    "HMV": "FLOAT64", "HST": "FLOAT64", "CSD": "VisString255", "CST": "VisString255",
+    "ISC": "INT32", "LPL": "VisString255", "LPC": "VisString255",
 }
 
 

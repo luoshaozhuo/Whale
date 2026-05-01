@@ -37,6 +37,9 @@ class AcquisitionTask(Base):
     asset_instance_id: Mapped[int] = mapped_column(
         ForeignKey("asset_instance.asset_instance_id"), nullable=False, index=True, comment="目标资产实例"
     )
+    asset_type_id: Mapped[int] = mapped_column(
+        ForeignKey("asset_type.asset_type_id"), nullable=False, index=True, comment="资产类型"
+    )
     ied_id: Mapped[int] = mapped_column(
         ForeignKey("scada_ied.ied_id"), nullable=False, index=True, comment="采集测点模板（IED）"
     )

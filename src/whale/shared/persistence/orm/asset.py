@@ -30,13 +30,8 @@ class AssetType(Base):
 
     asset_instances: Mapped[list["AssetInstance"]] = relationship(back_populates="asset_type")
     boms: Mapped[list["AssetBOM"]] = relationship(back_populates="asset_type")
-    wind_turbine_models: Mapped[list["WindTurbineModel"]] = relationship(back_populates="asset_type")
-    pv_inverter_models: Mapped[list["PVInverterModel"]] = relationship(back_populates="asset_type")
-    pv_panel_models: Mapped[list["PVPanelModel"]] = relationship(back_populates="asset_type")
-    pcs_models: Mapped[list["PCSModel"]] = relationship(back_populates="asset_type")
-    battery_system_models: Mapped[list["BatterySystemModel"]] = relationship(back_populates="asset_type")
-    transformer_models: Mapped[list["TransformerModel"]] = relationship(back_populates="asset_type")
-    svg_models: Mapped[list["SVGModel"]] = relationship(back_populates="asset_type")
+    models: Mapped[list["AssetModel"]] = relationship(back_populates="asset_type")
+    attributes: Mapped[list["AssetAttribute"]] = relationship(back_populates="asset_type")
 
 
 class ComponentType(Base):
@@ -49,16 +44,8 @@ class ComponentType(Base):
 
     component_instances: Mapped[list["ComponentInstance"]] = relationship(back_populates="component_type")
     boms: Mapped[list["AssetBOM"]] = relationship(back_populates="component_type")
-    blade_models: Mapped[list["BladeModel"]] = relationship(back_populates="component_type")
-    tower_models: Mapped[list["TowerModel"]] = relationship(back_populates="component_type")
-    gearbox_models: Mapped[list["GearboxModel"]] = relationship(back_populates="component_type")
-    generator_models: Mapped[list["GeneratorModel"]] = relationship(back_populates="component_type")
-    pitch_system_models: Mapped[list["PitchSystemModel"]] = relationship(back_populates="component_type")
-    tracker_models: Mapped[list["TrackerModel"]] = relationship(back_populates="component_type")
-    combiner_box_models: Mapped[list["CombinerBoxModel"]] = relationship(back_populates="component_type")
-    battery_cell_models: Mapped[list["BatteryCellModel"]] = relationship(back_populates="component_type")
-    bms_models: Mapped[list["BMSModel"]] = relationship(back_populates="component_type")
-    thermal_management_models: Mapped[list["ThermalManagementModel"]] = relationship(back_populates="component_type")
+    models: Mapped[list["ComponentModel"]] = relationship(back_populates="component_type")
+    attributes: Mapped[list["ComponentAttribute"]] = relationship(back_populates="component_type")
 
 
 class AssetInstance(Base):
@@ -83,6 +70,12 @@ class AssetInstance(Base):
     org: Mapped["Organization"] = relationship(back_populates="asset_instances")
     component_instances: Mapped[list["ComponentInstance"]] = relationship(back_populates="asset_instance")
     acquisition_tasks: Mapped[list["AcquisitionTask"]] = relationship(back_populates="asset_instance")
+    topology_sources: Mapped[list["ElectricalTopology"]] = relationship(
+        back_populates="source_asset", foreign_keys="ElectricalTopology.source_asset_instance_id"
+    )
+    topology_targets: Mapped[list["ElectricalTopology"]] = relationship(
+        back_populates="target_asset", foreign_keys="ElectricalTopology.target_asset_instance_id"
+    )
 
 
 class ComponentInstance(Base):
@@ -114,9 +107,11 @@ class AssetBOM(Base):
 
     bom_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     asset_type_id: Mapped[int] = mapped_column(ForeignKey("asset_type.asset_type_id"), nullable=False, index=True)
-    asset_model_id: Mapped[int] = mapped_column(Integer, nullable=False, comment="资产型号ID（多态引用）")
+    asset_model_id: Mapped[int] = mapped_column(
+        ForeignKey("asset_model.model_id"), nullable=False, comment="资产型号ID"
+    )
     component_type_id: Mapped[int] = mapped_column(ForeignKey("component_type.component_type_id"), nullable=False, index=True)
-    component_model_id: Mapped[int] = mapped_column(Integer, nullable=False, comment="部件型号ID（多态引用）")
+    component_model_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="部件型号ID（多态引用）")
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1, comment="单台用量")
 
     asset_type: Mapped["AssetType"] = relationship(back_populates="boms")
@@ -134,15 +129,15 @@ SELECT
     at.asset_type_id,
     at.asset_type_name,
     ab.asset_model_id,
-    wt.model_name           AS asset_model_name,
+    am.model_name           AS asset_model_name,
     ct.component_type_id,
     ct.component_type_name,
     ab.component_model_id,
     ab.quantity
 FROM asset_bom ab
-JOIN asset_type               at ON at.asset_type_id = ab.asset_type_id
-JOIN asset_wind_turbine_model wt ON wt.model_id = ab.asset_model_id
-JOIN component_type           ct ON ct.component_type_id = ab.component_type_id
+JOIN asset_type        at ON at.asset_type_id = ab.asset_type_id
+JOIN asset_model       am ON am.model_id = ab.asset_model_id
+JOIN component_type    ct ON ct.component_type_id = ab.component_type_id
 """
 
 
@@ -157,7 +152,7 @@ class WindTurbineBOMView(Base):
     asset_model_name: Mapped[str] = mapped_column(String(255))
     component_type_id: Mapped[int] = mapped_column(Integer)
     component_type_name: Mapped[str] = mapped_column(String(255))
-    component_model_id: Mapped[int] = mapped_column(Integer)
+    component_model_id: Mapped[Optional[int]] = mapped_column(Integer)
     quantity: Mapped[int] = mapped_column(Integer)
 
 

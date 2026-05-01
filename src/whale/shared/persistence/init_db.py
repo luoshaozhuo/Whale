@@ -9,12 +9,27 @@ from sqlalchemy import inspect, text
 
 from whale.shared.persistence import Base
 from whale.shared.persistence.orm.asset import WIND_TURBINE_BOM_VIEW_SQL
-from whale.shared.persistence.orm.scada_model import MEASUREMENT_POINT_VIEW_SQL
-from whale.shared.persistence.session import _db_url, engine, session_scope
+from whale.shared.persistence.orm.scada_model import (
+    ACQ_DO_STATE_DETAIL_VIEW_SQL,
+    ASSET_MODEL_DETAIL_VIEW_SQL,
+    COMPONENT_MODEL_DETAIL_VIEW_SQL,
+    MEASUREMENT_POINT_VIEW_SQL,
+)
+from whale.shared.persistence.session import _db_url, engine
 
 
-def init_db() -> None:
-    """Create all shared ORM tables and the measurement-point view."""
+def init_db(force: bool = False) -> None:
+    """Create all shared ORM tables and views.
+
+    Args:
+        force: If True, delete existing database without confirmation.
+    """
+    if force:
+        reset_db()
+        initialize_db()
+        print("已完成强制初始化。")
+        return
+
     if _has_existing_schema():
         confirmation = input(_build_delete_confirmation_prompt()).strip()
         if confirmation != "delete":
@@ -27,37 +42,42 @@ def init_db() -> None:
 
 
 def initialize_db() -> None:
-    """Create tables from all shared ORM models, then create the DA view."""
+    """Create tables from all shared ORM models, then create views."""
     import_module("whale.shared.persistence.orm")
     Base.metadata.create_all(bind=engine)
 
     with engine.connect() as conn:
-        # 防止之前版本把 v_measurement_point 建成了表
-        for view_sql in (WIND_TURBINE_BOM_VIEW_SQL, MEASUREMENT_POINT_VIEW_SQL):
-            # "CREATE VIEW IF NOT EXISTS <name> AS ..."
-            # "CREATE VIEW IF NOT EXISTS <name> AS ..." → name is word #5
+        for view_sql in (
+            WIND_TURBINE_BOM_VIEW_SQL,
+            MEASUREMENT_POINT_VIEW_SQL,
+            ASSET_MODEL_DETAIL_VIEW_SQL,
+            COMPONENT_MODEL_DETAIL_VIEW_SQL,
+            ACQ_DO_STATE_DETAIL_VIEW_SQL,
+        ):
             view_name = view_sql.strip().split()[5]
             conn.execute(text(f"DROP TABLE IF EXISTS {view_name}"))
             conn.execute(text(f"DROP VIEW IF EXISTS {view_name}"))
             conn.execute(text(view_sql))
+
         conn.commit()
 
 
 def reset_db() -> None:
-    """Drop all tables and remove the view."""
+    """Drop all tables and remove views."""
     import_module("whale.shared.persistence.orm")
 
-    if _db_url.get_dialect().name == "sqlite":
-        engine.dispose()
-
     with engine.begin() as conn:
-        conn.execute(text("DROP VIEW IF EXISTS v_measurement_point"))
+        # Drop known views first to avoid dependency issues
+        for v in ("v_measurement_point", "v_wind_turbine_bom",
+                   "v_asset_model_detail", "v_component_model_detail",
+                   "v_acq_do_state_detail"):
+            conn.execute(text(f"DROP VIEW IF EXISTS {v}"))
     Base.metadata.drop_all(bind=engine)
 
-    # SQLite: also delete the file for a truly clean slate
+    # Dispose and delete file last, after all DB operations complete
     if _db_url.get_dialect().name == "sqlite":
+        engine.dispose()
         from pathlib import Path
-
         db_path = Path(str(_db_url.database))
         if db_path.exists():
             db_path.unlink()
@@ -88,12 +108,20 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run without interactive prompts.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force delete existing database without confirmation.",
+    )
     return parser
 
 
 def main() -> int:
     args = _build_argument_parser().parse_args()
 
+    if args.force:
+        init_db(force=True)
+        return 0
     if args.reset:
         reset_db()
     elif not args.non_interactive:
