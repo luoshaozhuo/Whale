@@ -1,4 +1,4 @@
-"""Stress test fixtures: PostgreSQL + Redis + Kafka, large NodeSets."""
+"""Load test fixtures: PostgreSQL + Redis + Kafka, large NodeSets."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ["WHALE_INGEST_REDIS_PORT"] = str(REDIS_PORT)
     os.environ["WHALE_INGEST_REDIS_DB"] = "0"
     os.environ["WHALE_INGEST_REDIS_STATE_HASH_KEY"] = "whale:ingest:state"
-    os.environ["WHALE_INGEST_STATION_ID"] = "station-stress-001"
+    os.environ["WHALE_INGEST_STATION_ID"] = "station-load-001"
     os.environ["WHALE_INGEST_KAFKA_BOOTSTRAP_SERVERS"] = KAFKA_BOOTSTRAP_SERVER
     os.environ["WHALE_INGEST_KAFKA_TOPIC"] = "whale.ingest.state_snapshot.v1"
     os.environ["WHALE_INGEST_KAFKA_ACK_TIMEOUT_SECONDS"] = "5.0"

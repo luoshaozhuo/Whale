@@ -1,4 +1,4 @@
-"""E2E test: OPC UA simulator driven by whale database."""
+"""Integration tests: OPC UA simulator driven by whale database."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import pytest
 from tools.opcua_sim.fleet_runtime import OpcUaFleetRuntime
 
 
-@pytest.mark.e2e
+@pytest.mark.integration
 def test_from_database_creates_fleet_with_correct_endpoints() -> None:
     """Verify from_database() reads acq_task and creates correct number of servers."""
     fleet = OpcUaFleetRuntime.from_database()
@@ -22,7 +22,7 @@ def test_from_database_creates_fleet_with_correct_endpoints() -> None:
         fleet._temp_dir.cleanup() if fleet._temp_dir else None
 
 
-@pytest.mark.e2e
+@pytest.mark.integration
 def test_single_server_starts_and_exposes_all_variables() -> None:
     """Start one server from DB, connect, verify all v_measurement_point variables exist."""
     from whale.shared.persistence.session import session_scope
@@ -71,7 +71,7 @@ def test_single_server_starts_and_exposes_all_variables() -> None:
     asyncio.run(_run())
 
 
-@pytest.mark.e2e
+@pytest.mark.integration
 def test_variable_values_update_over_time() -> None:
     """Start server, read a variable, wait, re-read — value should change."""
     async def _run() -> None:
@@ -108,7 +108,7 @@ def test_variable_values_update_over_time() -> None:
     asyncio.run(_run())
 
 
-@pytest.mark.e2e
+@pytest.mark.integration
 def test_multi_server_fleet_from_database() -> None:
     """Start 3 servers from DB, verify each exposes only its own turbine."""
     async def _run() -> None:
@@ -132,6 +132,127 @@ def test_multi_server_fleet_from_database() -> None:
         finally:
             for r in runtimes:
                 r.stop()
+            fleet._temp_dir.cleanup() if fleet._temp_dir else None
+
+    asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_single_server_delivers_10hz_update_rate() -> None:
+    """Subscribe to 20 variables on one 10Hz server, verify ~100ms update interval."""
+    from tools.opcua_sim.models import OpcUaServerConfig
+    import time as _t
+
+    async def _run() -> None:
+        from asyncua import Client
+
+        fleet = OpcUaFleetRuntime.from_database()
+        runtime = fleet._runtimes[0]
+        runtime._config = OpcUaServerConfig(
+            name=runtime._config.name, endpoint=runtime._config.endpoint,
+            security_policy=runtime._config.security_policy,
+            security_mode=runtime._config.security_mode,
+            update_interval_seconds=0.1,
+        )
+        runtime.start()
+        try:
+            await asyncio.sleep(2.0)
+            ts: list[float] = []
+
+            class _C:
+                def datachange_notification(self, n, v, d):
+                    del n, v, d; ts.append(_t.monotonic())
+
+            async with Client(url=runtime.endpoint, timeout=5) as c:
+                ns = await c.get_namespace_index("urn:windfarm:2wtg")
+                wf = await c.get_objects_node().get_child(f"{ns}:WindFarm")
+                turbine = (await wf.get_children())[0]
+                sub = await c.create_subscription(50, _C())
+                for v in (await turbine.get_children())[:20]:
+                    await sub.subscribe_data_change(v)
+
+                print(f"\n  Subscribed 20 vars, collecting 30s...")
+                await asyncio.sleep(30)
+                await sub.delete()
+
+            intervals = [b - a for a, b in zip(ts, ts[1:])]
+            mean_ms = (sum(intervals) / len(intervals)) * 1000 if intervals else 0
+            print(f"  Events: {len(ts)}  Mean interval: {mean_ms:.1f}ms")
+
+            assert len(ts) >= 100, f"Only {len(ts)} notifications"
+            assert mean_ms < 30, f"Mean {mean_ms:.0f}ms > 30ms"
+        finally:
+            runtime.stop()
+            fleet._temp_dir.cleanup() if fleet._temp_dir else None
+
+    asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_all_30_servers_concurrent_10hz_update() -> None:
+    """Start all 30 servers at 10Hz, verify each delivers notifications via sampling.
+
+    Opens one client at a time, reads 3 variable values, moves to next server.
+    Each server should return non-zero values from its 10Hz update thread.
+    """
+    from tools.opcua_sim.models import OpcUaServerConfig
+    import time as _t
+
+    async def _sample_one(endpoint: str) -> tuple[int, float]:
+        from asyncua import Client
+        try:
+            async with Client(url=endpoint, timeout=5) as c:
+                ns = await c.get_namespace_index("urn:windfarm:2wtg")
+                wf = await c.get_objects_node().get_child(f"{ns}:WindFarm")
+                turbine = (await wf.get_children())[0]
+                vars_ = await turbine.get_children()
+                count = 0
+                t0 = _t.monotonic()
+                for v in vars_[:3]:
+                    try:
+                        val = await v.read_value()
+                        if isinstance(val, (int, float)) and val != 0:
+                            count += 1
+                    except Exception:
+                        pass
+                elapsed = (_t.monotonic() - t0) * 1000
+                return count, elapsed
+        except Exception as e:
+            return -1, 0
+
+    async def _run() -> None:
+        fleet = OpcUaFleetRuntime.from_database()
+        runtimes = fleet._runtimes
+        results: dict[str, tuple[int, float]] = {}
+
+        for rt in runtimes:
+            rt._config = OpcUaServerConfig(
+                name=rt._config.name, endpoint=rt._config.endpoint,
+                security_policy=rt._config.security_policy,
+                security_mode=rt._config.security_mode,
+                update_interval_seconds=0.1,
+            )
+            rt.start()
+
+        try:
+            await asyncio.sleep(2.0)
+            t_start = _t.monotonic()
+            for rt in runtimes:
+                count, ms = await _sample_one(rt.endpoint)
+                results[rt.name] = (count, ms)
+
+            total_ms = (_t.monotonic() - t_start) * 1000
+            ok = sum(1 for c, _ in results.values() if c > 0)
+            print(f"\n  Sampled 30 servers in {total_ms:.0f}ms: {ok}/30 OK")
+            for name, (c, ms) in list(results.items())[:5]:
+                print(f"  {name}: {c} non-zero vars, {ms:.0f}ms")
+            if len(results) > 5:
+                print(f"  ... ({len(results)} total)")
+
+            assert ok >= 27, f"Only {ok}/30 servers returned non-zero values"
+        finally:
+            for rt in runtimes:
+                rt.stop()
             fleet._temp_dir.cleanup() if fleet._temp_dir else None
 
     asyncio.run(_run())

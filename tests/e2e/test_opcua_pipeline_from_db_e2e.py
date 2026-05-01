@@ -48,7 +48,19 @@ def test_e2e_db_driven_pipeline_reads_wtg_and_publishes_to_kafka(
         variable_keys=all_keys[:50],
     )
 
-    # ── 3. Start fleet from DB (one server) ─────────────────────────
+    # ── 3. Kill lingering OPC UA processes, then start fleet ────────
+    import subprocess as _sp
+    try:
+        out = _sp.check_output(["ss", "-tlnp"], text=True, timeout=5)
+        for line in out.split("\n"):
+            for port in range(40001, 40033):
+                if f":{port}" in line and "pid=" in line:
+                    pid = line.split("pid=")[-1].split(",")[0].strip()
+                    if pid.isdigit():
+                        _sp.run(["kill", "-9", pid], capture_output=True)
+    except Exception:
+        pass
+
     from tools.opcua_sim.fleet_runtime import OpcUaFleetRuntime
     fleet = OpcUaFleetRuntime.from_database()
     runtime = fleet._runtimes[0]

@@ -1,150 +1,164 @@
-# Tests Guide
+# Testing Guide
 
-本文档说明本仓库测试的常用运行方式、`pytest` 常见参数，以及 [tests/conftest.py](/home/luosh/Whale/tests/conftest.py:1) 的作用。
+## 测试分层与定位
 
-## Run Tests
+### Unit Tests（单元测试）
 
-运行默认测试发现范围：
+验证单个函数、类或模块的逻辑正确性。不依赖外部服务（数据库、网络、OPC UA 服务器），所有外部依赖使用 mock 或 fake。
 
-```bash
-pytest
+- **目标**：快速、稳定、精确定位问题
+- **运行频率**：每次提交、每次保存
+- **标记**：`@pytest.mark.unit`
+- **目录**：[tests/unit/](tests/unit/)
+
+### Integration Tests（集成测试）
+
+验证多个组件之间的交互是否正确。依赖真实的数据库连接、真实的 OPC UA 服务器启动/停止、真实的网络通信。不做 mock。
+
+- **目标**：验证组件间接口和交互正确
+- **依赖**：PostgreSQL、OPC UA 服务端、asyncua Client
+- **标记**：`@pytest.mark.integration`
+- **目录**：[tests/integration/](tests/integration/)
+
+### E2E Tests（端到端测试）
+
+验证从 OPC UA 数据采集到消息管道（Redis State Cache → Kafka Message Pipeline）的完整链路。
+
+- **目标**：验证全链路数据流动正确
+- **依赖**：Docker（PostgreSQL + Redis + Kafka）、OPC UA 模拟器、ingest 管道
+- **标记**：`@pytest.mark.e2e`
+- **目录**：[tests/e2e/](tests/e2e/)
+
+### Performance Tests（性能测试）
+
+性能测试是总称，包含以下三个子类型，分别验证系统在不同维度下的表现。
+
+#### Endurance Tests（耐久测试 / 性能验证）
+
+验证系统在稳态负载下是否达到预期性能指标。例如：90% 的请求响应时间不超过 1 秒、持续运行 N 小时零错误。
+
+- **目标**：确认系统满足 SLA 或预期性能指标
+- **特征**：固定负载、较长时间运行、关注延迟/吞吐量指标
+- **标记**：`@pytest.mark.endurance`
+- **目录**：[tests/performance/endurance/](tests/performance/endurance/)
+
+#### Load Tests（负载测试）
+
+对系统施加不同级别的负载（逐步增加用户数、数据量、并发度），观察系统表现，找出最佳运行状态或容量上限。
+
+- **目标**：确定系统在什么负载级别下能平稳运行，找到拐点
+- **特征**：阶梯式或持续高负载、关注吞吐量变化曲线、找上限
+- **标记**：`@pytest.mark.load`
+- **目录**：[tests/performance/load/](tests/performance/load/)
+
+#### Stress Tests（压力测试）
+
+主动将系统推向极限（超大规模数据、极端并发、资源耗尽），观察系统在超出设计容量时的行为：是优雅降级还是崩溃。
+
+- **目标**：验证极端条件下的健壮性和恢复能力
+- **特征**：超出正常容量、故意制造资源瓶颈、关注崩溃模式和恢复
+- **标记**：`@pytest.mark.stress`
+- **目录**：[tests/performance/stress/](tests/performance/stress/)
+
+### 测试分层关系图
+
+```
+                         ┌──────────────┐
+                         │   E2E Tests  │  ← 全链路，最慢，最真实
+                         └──────┬───────┘
+                                │
+              ┌─────────────────┼─────────────────┐
+              │                 │                 │
+    ┌─────────▼──────┐  ┌──────▼──────┐  ┌───────▼────────┐
+    │  Endurance     │  │    Load     │  │    Stress      │
+    │  (稳态验证)     │  │  (找上限)   │  │  (推向崩溃)     │
+    └────────────────┘  └─────────────┘  └────────────────┘
+              │                 │                 │
+              └─────────────────┼─────────────────┘
+                                │
+                     ┌──────────▼──────────┐
+                     │  Integration Tests  │  ← 组件交互，中等速度
+                     └──────────┬──────────┘
+                                │
+                     ┌──────────▼──────────┐
+                     │    Unit Tests       │  ← 单一模块，最快，最稳定
+                     └─────────────────────┘
 ```
 
-只运行 `tests/unit/tools`：
+---
+
+## 运行测试
+
+### 按目录
 
 ```bash
-pytest tests/unit/tools
+pytest                                          # 默认发现
+pytest tests/unit/tools                         # 只跑 unit/tools
+pytest tests/integration/tools                  # 只跑 integration/tools
+pytest tests/e2e                                # 只跑 e2e
+pytest tests/performance/load                   # 只跑 load 测试
 ```
 
-只运行当前文件：
+### 按标记
 
 ```bash
-pytest tests/unit/tools/test_opcua_sim_loader.py
+pytest -m unit                                  # 所有单元测试
+pytest -m integration                           # 所有集成测试
+pytest -m e2e                                   # 所有端到端测试
+pytest -m load                                  # 所有负载测试
+pytest -m stress                                # 所有压力测试
+pytest -m endurance                             # 所有耐久测试
 ```
 
-只运行名称匹配的测试：
+### 按名称
 
 ```bash
-pytest tests/unit/tools/test_opcua_sim_loader.py -k load_server_config
+pytest -k "10hz"                                # 名称含 "10hz" 的测试
+pytest -k "from_database"                       # 名称含 "from_database" 的测试
 ```
 
-只运行 `unit` marker 对应的测试：
+---
+
+## 常用参数
+
+| 参数 | 作用 |
+|------|------|
+| `-v` | 详细输出，显示每个测试名称 |
+| `-vv` | 更详细，适合调试 |
+| `-q` | 简洁输出 |
+| `-s` | 不捕获 print，调试时常用 |
+| `-x` | 遇到第一个失败立即停止 |
+| `--maxfail=N` | 最多 N 个失败后停止 |
+| `-m <marker>` | 按 pytest marker 过滤 |
+| `-k <expr>` | 按名称关键字过滤 |
+
+---
+
+## 环境依赖速查
+
+| 测试层级 | PostgreSQL | Redis | Kafka | OPC UA Server | Docker |
+|----------|-----------|-------|-------|---------------|--------|
+| Unit | No | No | No | No | No |
+| Integration | Yes (shared DB) | No | No | Yes | No |
+| E2E | Yes | Yes | Yes | Yes | Yes |
+| Performance | Yes | Yes | Yes | Yes | Yes |
+
+### 启动 E2E / Performance 所需基础设施
 
 ```bash
-pytest -m unit
+docker compose -f docker-compose.ingest-dev.yaml up -d
+python -m whale.shared.persistence.template.sample_data
 ```
 
-`tests/unit/tools` 里的测试属于单元测试，一般不需要先手动启动 OPC UA 服务器。
+---
 
-## Output Flags
+## conftest.py
 
-`pytest` 默认输出适中，适合日常直接运行。
+[tests/conftest.py](tests/conftest.py) 被 pytest 自动加载，提供共享 fixture：
 
-`-q` 表示更简洁：
+- `sample_nodeset_path` / `sample_opcua_connections_path` — OPC UA 模板路径
+- `free_ports` — 分配空闲端口
+- `local_opcua_connections_path` — 生成测试专用 localhost OPC UA 配置
+- `opcua_server_runtime` / `opcua_sim_fleet` — 启动 OPC UA 模拟服务
 
-- 适合只看通过数、失败数和总耗时
-- 常见输出类似 `3 passed in 0.02s`
-
-`-v` 表示更详细：
-
-- 会显示更多测试名称和执行信息
-
-`-vv` 表示比 `-v` 更详细：
-
-- 适合调试单个文件或排查失败
-
-常见组合：
-
-```bash
-pytest
-pytest -q
-pytest tests/unit/tools -q
-pytest tests/unit/tools -vv
-```
-
-## Filter Flags
-
-`-m` 和 `-k` 很容易混淆，但作用不同。
-
-`-m <expr>`：按 `marker` 过滤，也就是按 `@pytest.mark.xxx` 过滤。
-
-例如：
-
-```bash
-pytest -m unit
-pytest -m integration
-```
-
-`-k <expr>`：按名称过滤，匹配文件名、类名、函数名中的文本。
-
-例如：
-
-```bash
-pytest -k load_server_config
-pytest -k loader
-```
-
-可以这样记：
-
-- `-m` = marker
-- `-k` = keyword / name match
-
-## Other Useful Flags
-
-`-s`：不捕获 `print` 输出，调试时常用。
-
-`-x`：遇到第一个失败就停止。
-
-`--maxfail=1`：最多失败一个测试后停止。
-
-一个常见调试命令：
-
-```bash
-pytest tests/unit/tools/test_opcua_sim_loader.py -vv -s
-```
-
-这表示只运行当前文件、使用详细输出，并直接显示 `print` 内容。
-
-## About `conftest.py`
-
-[tests/conftest.py](/home/luosh/Whale/tests/conftest.py:1) 会被 `pytest` 自动加载。
-
-这意味着：
-
-- 里面定义的 fixture 不需要手动注册
-- 测试函数只要把 fixture 名写进参数列表，pytest 就会自动准备依赖
-
-这个文件目前主要负责两类事情：
-
-- 提供 OPC UA 模板文件路径
-- 为集成测试准备本地 OPC UA 运行环境
-
-### Fixture Groups
-
-OPC UA 模板相关：
-
-- `sample_nodeset_path`
-  指向 [tools/opcua_sim/templates/OPCUANodeSet.xml](/home/luosh/Whale/tools/opcua_sim/templates/OPCUANodeSet.xml:1)
-- `sample_opcua_connections_path`
-  指向 [tools/opcua_sim/templates/OPCUA_client_connections.yaml](/home/luosh/Whale/tools/opcua_sim/templates/OPCUA_client_connections.yaml:1)
-
-OPC UA 集成测试运行环境相关：
-
-- `free_ports`
-  分配两个本地空闲端口
-- `local_opcua_connections_path`
-  基于模板 YAML 生成当前测试专用的 localhost 配置
-- `opcua_server_runtime`
-  启动单个 OPC UA 模拟服务
-- `opcua_sim_fleet`
-  启动一组 OPC UA 模拟服务
-
-### Typical Dependency Chain
-
-一个典型例子是 `opcua_sim_fleet`：
-
-- 测试函数依赖 `opcua_sim_fleet`
-- `opcua_sim_fleet` 依赖 `sample_nodeset_path` 和 `local_opcua_connections_path`
-- `local_opcua_connections_path` 依赖 `sample_opcua_connections_path` 和 `free_ports`
-
-所以测试代码本身可以写得比较短，而服务启动、端口分配、临时配置生成、资源清理这些细节都收敛在 `conftest.py` 中。
+`tests/e2e/conftest.py` 和 `tests/performance/load/conftest.py` 负责 Docker 基础设施（PostgreSQL / Redis / Kafka）的连接和表创建。
