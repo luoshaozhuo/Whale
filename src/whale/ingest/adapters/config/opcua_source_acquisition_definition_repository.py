@@ -23,13 +23,15 @@ from whale.ingest.usecases.dtos.source_runtime_config_data import (
 from whale.shared.persistence.orm import (
     AcquisitionTask,
     AssetInstance,
-    DA,
+    DO,
     IED,
+    LD,
+    LN,
 )
 
 
 class OpcUaSourceAcquisitionDefinitionRepository(SourceAcquisitionDefinitionPort):
-    """Load OPC UA acquisition config from tasks, assets and the IED → DA hierarchy."""
+    """Load OPC UA acquisition config from tasks, assets and the IED → DO hierarchy."""
 
     def __init__(
         self,
@@ -62,23 +64,19 @@ class OpcUaSourceAcquisitionDefinitionRepository(SourceAcquisitionDefinitionPort
             if ied is None:
                 raise LookupError(f"IED `{ied_id}` was not found for task `{task.task_id}`.")
 
-            # 查询该 IED 下所有启用的 DA（通过 DO → LN → LD join）
-            da_rows = list(
+            # Query all DOs under this IED (through DO → LN → LD join)
+            do_rows = list(
                 session.scalars(
-                    select(DA)
-                    .join(DA.do)
-                    .join(DA.do.ln)
-                    .join(DA.do.ln.ld)
-                    .where(
-                        DA.do.ln.ld.ied_id == ied_id,
-                        DA.enabled.is_(True),
-                    )
-                    .order_by(DA.da_id)
+                    select(DO)
+                    .join(DO.ln)
+                    .join(LN.ld)
+                    .where(LD.ied_id == ied_id)
+                    .order_by(DO.do_id)
                 )
             )
-            if not da_rows:
+            if not do_rows:
                 raise LookupError(
-                    f"No enabled DA found under IED `{ied.ied_name}` for task `{task.task_id}`."
+                    f"No DO found under IED `{ied.ied_name}` for task `{task.task_id}`."
                 )
 
             _model_id = ied.ied_name
@@ -87,21 +85,13 @@ class OpcUaSourceAcquisitionDefinitionRepository(SourceAcquisitionDefinitionPort
             _params = dict(task.params)
             _items = [
                 AcquisitionItemData(
-                    key=row.da_name,
-                    locator=(
-                        row.locator.format(
-                            device_code=_asset_code,
-                            source_id=_asset_code,
-                            key=row.da_name,
-                        )
-                        if row.locator
-                        else ""
-                    ),
-                    locator_type=row.locator_type,
-                    display_name=row.display_name or row.da_name,
-                    params=dict(row.variable_params),
+                    key=row.do_name,
+                    locator=f"s={_asset_code}.{row.do_name}",
+                    locator_type="node_path",
+                    display_name=row.display_name or row.do_name,
+                    params={},
                 )
-                for row in da_rows
+                for row in do_rows
             ]
 
         return SourceAcquisitionDefinition(

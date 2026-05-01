@@ -57,7 +57,20 @@ def initialize_db() -> None:
             view_name = view_sql.strip().split()[5]
             conn.execute(text(f"DROP TABLE IF EXISTS {view_name}"))
             conn.execute(text(f"DROP VIEW IF EXISTS {view_name}"))
-            conn.execute(text(view_sql))
+            # Fix SQLite-specific syntax for PostgreSQL
+            sql = view_sql.replace("IF NOT EXISTS ", "")
+            if _db_url.get_dialect().name == "postgresql":
+                import re
+                # json_extract → PostgreSQL ->> operator
+                sql = re.sub(
+                    r"json_extract\((\w+\.specifications),\s*'\$\.'\s*\|\|\s*(\w+\.attribute_name)\)",
+                    r"\1 ->> \2",
+                    sql,
+                )
+                # "do" is a reserved keyword in PostgreSQL, rename alias
+                sql = re.sub(r"\bscada_do\s+do\b", "scada_do        d", sql)
+                sql = re.sub(r"\bdo\.", "d.", sql)
+            conn.execute(text(sql))
 
         conn.commit()
 

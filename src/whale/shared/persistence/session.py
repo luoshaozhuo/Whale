@@ -9,6 +9,8 @@
     WHALE_SHARED_DB_NAME       — 数据库名称
     WHALE_SHARED_DB_USERNAME   — 用户名
     WHALE_SHARED_DB_PASSWORD   — 密码
+
+环境变量可以写在项目根目录 .env 文件中，启动时自动加载.
 """
 
 from __future__ import annotations

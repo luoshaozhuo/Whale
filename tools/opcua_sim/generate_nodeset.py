@@ -1,17 +1,30 @@
 """Generate OPC UA NodeSet XML from GB/T 30966.2 field definitions.
 
-Usage::
-
-    from tools.opcua_sim.generate_nodeset import generate_nodeset_xml
-    xml = generate_nodeset_xml(turbine_count=2)
-    Path("nodeset.xml").write_text(xml)
+Supports both the legacy static-field path and database-driven generation.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Iterable
 
-from tools.opcua_sim.templates.gbt_30966_fields import ALL_LOGICAL_NODES, LogicalNodeField
+# ── OPC UA type mapping (scada_data_type → OPC UA DataType) ────────────
+_SCADA_TO_OPCUA_TYPE: dict[str, str] = {
+    "FLOAT64": "Double",
+    "FLOAT32": "Double",
+    "INT8": "Int32",
+    "INT16": "Int32",
+    "INT32": "Int32",
+    "INT64": "Int32",
+    "INT8U": "Int32",
+    "INT16U": "Int32",
+    "INT32U": "Int32",
+    "BOOLEAN": "Boolean",
+    "VisString255": "String",
+    "CODED_ENUM": "Int32",
+    "TIMESTAMP": "String",
+    "OCTET_STRING": "String",
+}
 
 _HEADER = """<?xml version="1.0" encoding="utf-8"?>
 <UANodeSet xmlns="http://opcfoundation.org/UA/2011/03/UANodeSet.xsd"
@@ -31,6 +44,9 @@ _HEADER = """<?xml version="1.0" encoding="utf-8"?>
     <Alias Alias="HasComponent">i=47</Alias>
     <Alias Alias="Mandatory">i=78</Alias>
     <Alias Alias="Double">i=11</Alias>
+    <Alias Alias="Int32">i=6</Alias>
+    <Alias Alias="Boolean">i=1</Alias>
+    <Alias Alias="String">i=12</Alias>
   </Aliases>
   <UAObject NodeId="ns=1;s=WindFarm" BrowseName="1:WindFarm">
     <DisplayName>WindFarm</DisplayName>
@@ -81,60 +97,120 @@ _FOOTER = """</UANodeSet>
 """
 
 
-def generate_nodeset_xml(
-    turbine_count: int = 2,
-    fields: list[LogicalNodeField] | None = None,
-    turbine_name_prefix: str = "WTG_",
-) -> str:
-    """Generate OPC UA NodeSet XML with all variables as direct children of WindTurbineType.
+def _opcua_type(scada_type: str | None) -> str:
+    return _SCADA_TO_OPCUA_TYPE.get(str(scada_type or "FLOAT64"), "Double")
+
+
+def _default_mean(scada_type: str | None) -> float:
+    """Return a sensible default mean for simulation when none is provided."""
+    t = str(scada_type or "FLOAT64")
+    if t in ("BOOLEAN",):
+        return 0.0
+    if t == "INT32":
+        return 0.0
+    return 0.0
+
+
+def _field_mean_from_dict(do_name: str, field_means: dict[str, float], data_type: str | None) -> float:
+    """Look up the field mean from the gbt_30966 dict, falling back to defaults."""
+    if do_name in field_means:
+        return field_means[do_name]
+    return _default_mean(data_type)
+
+
+def _format_mean_val(mean: float, data_type: str) -> str:
+    opc_type = _opcua_type(data_type)
+    if opc_type == "Int32":
+        return str(int(mean))
+    if opc_type == "Boolean":
+        return "1" if mean >= 0.5 else "0"
+    if opc_type == "String":
+        return str(mean)
+    return str(mean)
+
+
+def generate_nodeset_from_measurement_points(
+    measurement_points: Iterable[dict],
+    turbine_names: list[str],
+    field_means: dict[str, float] | None = None,
+) -> tuple[str, dict[str, float]]:
+    """Generate OPC UA NodeSet XML from v_measurement_point query results.
 
     Args:
-        turbine_count: Number of turbine instances to create.
-        fields: Optional custom field list. If None, use all GB/T 30966 fields.
-        turbine_name_prefix: Prefix for turbine instance BrowseNames.
+        measurement_points: Iterable of dicts with keys matching v_measurement_point:
+            do_name, data_type, unit, display_name, constraint_expr.
+        turbine_names: List of turbine BrowseNames (e.g. ["ZB-WTG-001", ...]).
+        field_means: Optional pre-built {do_name: mean_value} dict. If None,
+            means default to 0.0.
+
+    Returns:
+        (nodeset_xml_string, variable_means_dict)
     """
-    if fields is None:
-        all_fields: list[LogicalNodeField] = []
-        for node in ALL_LOGICAL_NODES:
-            all_fields.extend(node.fields)
-        fields = all_fields
+    if field_means is None:
+        field_means = {}
 
     last_modified = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     parts: list[str] = [_HEADER.format(last_modified=last_modified)]
     parts.append(_TURBINE_TYPE_START)
 
-    for field in fields:
-        data_type = getattr(field, "data_type", "Double") or "Double"
-        if data_type == "Int32":
-            mean_val = str(int(field.mean))
-        elif data_type == "Boolean":
-            mean_val = "1" if field.mean >= 0.5 else "0"
-        elif data_type == "String":
-            mean_val = str(field.desc)
-        else:
-            mean_val = str(field.mean)
+    seen_keys: set[str] = set()
+    variable_means: dict[str, float] = {}
+    for mp in measurement_points:
+        key = mp["do_name"]
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        data_type = mp.get("data_type", "FLOAT64")
+        opc_type = _opcua_type(data_type)
+        mean_val = _field_mean_from_dict(key, field_means, data_type)
+        variable_means[key] = mean_val
+
+        unit = mp.get("unit") or ""
+        display_name = mp.get("display_name") or key
+        if unit:
+            display_name = f"{display_name} ({unit})"
+
         parts.append(
             _VARIABLE_TEMPLATE.format(
-                key=field.key,
-                display_name=f"{field.desc} ({field.unit})" if field.unit else field.desc,
-                data_type=data_type,
-                mean_val=mean_val,
+                key=key,
+                display_name=display_name,
+                data_type=opc_type,
+                mean_val=_format_mean_val(mean_val, data_type),
             )
         )
 
-    for i in range(1, turbine_count + 1):
-        parts.append(_TURBINE_INSTANCE_TEMPLATE.format(name=f"{turbine_name_prefix}{i:02d}"))
+    for name in turbine_names:
+        parts.append(_TURBINE_INSTANCE_TEMPLATE.format(name=name))
 
     parts.append(_FOOTER)
-    return "".join(parts)
+    return "".join(parts), variable_means
 
 
 def generate_small_nodeset_xml() -> str:
-    """Generate a NodeSet with just the original 3 variables (for backward compat)."""
+    """Minimal NodeSet with 3 variables for backward compat testing."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class _Field:
+        key: str
+        mean: float
+        unit: str
+        desc: str
+        data_type: str = "Double"
+
     small_fields = [
-        LogicalNodeField("TotW", 1200.0, "kW", "Total Active Power"),
-        LogicalNodeField("Spd", 12.5, "r/min", "Rotor Speed"),
-        LogicalNodeField("WS", 6.8, "m/s", "Wind Speed"),
+        _Field("TotW", 1200.0, "kW", "Total Active Power"),
+        _Field("Spd", 12.5, "r/min", "Rotor Speed"),
+        _Field("WS", 6.8, "m/s", "Wind Speed"),
     ]
-    return generate_nodeset_xml(turbine_count=2, fields=small_fields)
+    xml, _ = generate_nodeset_from_measurement_points(
+        measurement_points=[
+            {"do_name": f.key, "data_type": f.data_type, "unit": f.unit, "display_name": f.desc}
+            for f in small_fields
+        ],
+        turbine_names=["WTG_01", "WTG_02"],
+        field_means={f.key: f.mean for f in small_fields},
+    )
+    return xml

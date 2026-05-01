@@ -74,7 +74,6 @@ def pg_session(pg_engine, _pg_tables_created):
     session = Session(bind=pg_engine, autoflush=False, expire_on_commit=False)
     for table_name in (
         "acquisition_task", "acquisition_variable", "acquisition_model",
-        "device", "substation",
     ):
         session.execute(text(f"DELETE FROM {table_name}"))
     session.commit()

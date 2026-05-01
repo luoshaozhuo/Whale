@@ -50,7 +50,7 @@ Whale/
 
 ## init_db
 
-PYTHONPATH=src python -m whale.ingest.framework.persistence.init_db
+PYTHONPATH=src python -m whale.shared.persistence.template.sample_data
 
 ## Ingest 开发基础设施
 

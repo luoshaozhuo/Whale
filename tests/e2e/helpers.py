@@ -72,21 +72,9 @@ def seed_postgres_for_e2e(
     from whale.ingest.framework.persistence.orm.acquisition_variable_orm import (
         AcquisitionVariableORM,
     )
-    from whale.ingest.framework.persistence.orm.device_orm import DeviceORM
-    from whale.ingest.framework.persistence.orm.substation_orm import SubstationORM
 
-    substation = SubstationORM(name=substation_name)
-    pg_session.add(substation)
-    pg_session.flush()
-
-    device = DeviceORM(
-        substation_id=int(substation.id),
-        device_code=device_code,
-        device_model="GENERIC_WTG",
-        line_number="L1",
-    )
-    pg_session.add(device)
-    pg_session.flush()
+    # device_id is a plain integer since DeviceORM was removed
+    device_id = hash(device_code) % (10**9)
 
     model = AcquisitionModelORM(model_id=model_id, model_version=model_version)
     pg_session.add(model)
@@ -114,7 +102,7 @@ def seed_postgres_for_e2e(
         port = parsed.port
 
     task = AcquisitionTaskORM(
-        device_id=int(device.id),
+        device_id=device_id,
         model_id=model_id,
         model_version=model_version,
         protocol="opcua",

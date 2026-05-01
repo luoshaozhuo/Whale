@@ -868,15 +868,15 @@ def _create_acquisition_tasks(session: Session, turbines: list, ied: IED,
             task_name=f"task_{t.asset_code}", asset_instance_id=t.asset_instance_id,
             asset_type_id=t.asset_type_id,
             ied_id=ied.ied_id, protocol_type="OPC_UA",
-            endpoint=f"opc.tcp://192.168.{100 + i // 256}.{i % 256}:4840",
+            endpoint=f"opc.tcp://127.0.0.1:{40001 + i}",
             namespace_uri="http://www.goldwind.com/ns", sampling_interval_ms=1000,
             acquisition_mode="SUBSCRIPTION",
             params={"security_policy": "Basic256Sha256", "security_mode": "SignAndEncrypt"},
         )
         session.add(task); tasks.append(task)
     for name, asset_code, ied_obj, endpoint, mode, interval in [
-        ("task_ZB-MET-001", "ZB-MET-001", met_ied, "opc.tcp://192.168.200.1:4840", "POLLING", 5000),
-        ("task_ZB-SUB-001", "ZB-SUB-001", sub_ied, "opc.tcp://192.168.200.10:4840", "SUBSCRIPTION", 500),
+        ("task_ZB-MET-001", "ZB-MET-001", met_ied, "opc.tcp://127.0.0.1:40031", "POLLING", 5000),
+        ("task_ZB-SUB-001", "ZB-SUB-001", sub_ied, "opc.tcp://127.0.0.1:40032", "SUBSCRIPTION", 500),
     ]:
         asset = session.query(AssetInstance).filter(
             AssetInstance.asset_code == asset_code).first()
@@ -1044,15 +1044,21 @@ _COMPONENT_WIDE_VIEWS = {
 }
 
 
+def _is_postgresql(session: Session) -> bool:
+    """Detect if the session is connected to PostgreSQL."""
+    return session.get_bind().dialect.name == "postgresql"
+
+
 def _create_wide_model_views(session: Session) -> int:
-    """Create wide-format type-specific views (one row per model_id).
-
-    Columns: model_id, model_name, manufacturer, <type_id>, <type_name>,
-             plus one column per attribute (from JSON specifications).
-
-    Replaces the tall-format wrapper views previously created by init_db.
-    """
+    """Create wide-format type-specific views (one row per model_id)."""
     from sqlalchemy import text
+
+    is_pg = _is_postgresql(session)
+
+    def _json_col(table_alias: str, attr_name: str) -> str:
+        if is_pg:
+            return f"{table_alias}.specifications ->> '{attr_name}' AS {attr_name}"
+        return f"json_extract({table_alias}.specifications, '$.{attr_name}') AS {attr_name}"
 
     count = 0
 
@@ -1063,12 +1069,9 @@ def _create_wide_model_views(session: Session) -> int:
         if not attrs:
             continue
 
-        attr_cols = ",\n    ".join(
-            f"json_extract(am.specifications, '$.{a.attribute_name}') AS {a.attribute_name}"
-            for a in attrs
-        )
+        attr_cols = ",\n    ".join(_json_col("am", a.attribute_name) for a in attrs)
         sql = f"""
-        CREATE VIEW IF NOT EXISTS {view_name} AS
+        CREATE VIEW {view_name} AS
         SELECT
             am.model_id,
             am.model_name,
@@ -1091,12 +1094,9 @@ def _create_wide_model_views(session: Session) -> int:
         if not attrs:
             continue
 
-        attr_cols = ",\n    ".join(
-            f"json_extract(cm.specifications, '$.{a.attribute_name}') AS {a.attribute_name}"
-            for a in attrs
-        )
+        attr_cols = ",\n    ".join(_json_col("cm", a.attribute_name) for a in attrs)
         sql = f"""
-        CREATE VIEW IF NOT EXISTS {view_name} AS
+        CREATE VIEW {view_name} AS
         SELECT
             cm.model_id,
             cm.model_name,
@@ -1112,6 +1112,7 @@ def _create_wide_model_views(session: Session) -> int:
         session.execute(text(sql))
         count += 1
 
+    session.commit()
     return count
 
 

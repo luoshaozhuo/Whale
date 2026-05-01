@@ -9,8 +9,6 @@ services:
       POSTGRES_PASSWORD: whale
     ports:
       - "5432:5432"
-    volumes:
-      - whale_ingest_postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U whale -d whale_ingest"]
       interval: 10s
@@ -24,8 +22,6 @@ services:
     command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "16379:6379"
-    volumes:
-      - whale_ingest_redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -52,8 +48,6 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
-    volumes:
-      - whale_ingest_kafka_data:/var/lib/kafka/data
     healthcheck:
       test:
         [
@@ -63,8 +57,3 @@ services:
       interval: 15s
       timeout: 10s
       retries: 10
-
-volumes:
-  whale_ingest_postgres_data:
-  whale_ingest_redis_data:
-  whale_ingest_kafka_data:

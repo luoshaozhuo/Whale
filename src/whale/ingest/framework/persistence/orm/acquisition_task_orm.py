@@ -27,7 +27,7 @@ class AcquisitionTaskORM(Base):
         comment="Primary key for one acquisition task row",
     )
     device_id: Mapped[int] = mapped_column(
-        ForeignKey("device.id"),
+        Integer,
         nullable=False,
         index=True,
         comment="Target device identifier for the task",

@@ -15,17 +15,24 @@ DEFAULT_CONFIG_PATH = TEMPLATE_DIR / "OPCUA_client_connections.yaml"
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CLI parser for the OPC UA simulator fleet runner."""
-    parser = argparse.ArgumentParser(description="Run the repository-local OPC UA simulator fleet.")
+    parser = argparse.ArgumentParser(
+        description="Run the repository-local OPC UA simulator fleet."
+    )
+    parser.add_argument(
+        "--from-db",
+        action="store_true",
+        help="Read turbine configurations and variable definitions from the whale database "
+             "(acq_task + v_measurement_point).  Default: use YAML + static NodeSet.",
+    )
     parser.add_argument(
         "--nodeset-path",
         default=str(DEFAULT_NODESET_PATH),
-        help="Path to the NodeSet XML used to populate the simulator address space.",
+        help="Path to the NodeSet XML (ignored when --from-db is set).",
     )
     parser.add_argument(
         "--config-path",
         default=str(DEFAULT_CONFIG_PATH),
-        help="Path to the OPC UA connection YAML file.",
+        help="Path to the OPC UA connection YAML file (ignored when --from-db is set).",
     )
     parser.add_argument(
         "--namespace-uri",
@@ -36,16 +43,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    """Start the OPC UA simulator fleet and keep it running until interrupted."""
     args = build_parser().parse_args()
-    fleet = OpcUaFleetRuntime.from_connection_config(
-        nodeset_path=args.nodeset_path,
-        config_path=args.config_path,
-        namespace_uri=args.namespace_uri,
-    )
+
+    if args.from_db:
+        fleet = OpcUaFleetRuntime.from_database(namespace_uri=args.namespace_uri)
+    else:
+        fleet = OpcUaFleetRuntime.from_connection_config(
+            nodeset_path=args.nodeset_path,
+            config_path=args.config_path,
+            namespace_uri=args.namespace_uri,
+        )
 
     with fleet:
-        print(f"Simulator fleet started: {fleet.endpoints()}", flush=True)
+        endpoints = fleet.endpoints()
+        print(f"Simulator fleet started ({len(endpoints)} servers):", flush=True)
+        for name, ep in endpoints.items():
+            print(f"  {name}: {ep}", flush=True)
         try:
             while True:
                 time.sleep(3600)
