@@ -15,7 +15,7 @@ from whale.ingest.ports.runtime.source_runtime_config_port import (
 from whale.ingest.usecases.dtos.source_runtime_config_data import (
     SourceRuntimeConfigData,
 )
-from whale.shared.persistence.orm import AcquisitionTask, AssetInstance
+from whale.shared.persistence.orm import AcquisitionTask, AssetInstance, LDInstance
 
 
 class SourceRuntimeConfigRepository(SourceRuntimeConfigPort):
@@ -41,16 +41,21 @@ class SourceRuntimeConfigRepository(SourceRuntimeConfigPort):
 
     @staticmethod
     def _to_data(session: Session, task: AcquisitionTask) -> SourceRuntimeConfigData:
-        asset = session.get(AssetInstance, task.asset_instance_id)
+        ld = session.get(LDInstance, task.ld_instance_id)
+        if ld is None:
+            raise LookupError(
+                f"LDInstance `{task.ld_instance_id}` was not found for task `{task.task_id}`."
+            )
+        asset = session.get(AssetInstance, ld.asset_instance_id)
         if asset is None:
             raise LookupError(
-                f"AssetInstance `{task.asset_instance_id}` was not found for task `{task.task_id}`."
+                f"AssetInstance `{ld.asset_instance_id}` was not found for task `{task.task_id}`."
             )
         return SourceRuntimeConfigData(
             runtime_config_id=task.task_id,
             source_id=asset.asset_code,
-            protocol=task.protocol_type,
+            protocol="opcua",
             acquisition_mode=task.acquisition_mode,
-            interval_ms=task.sampling_interval_ms,
+            interval_ms=0,  # interval is now per-signal in profile items
             enabled=task.enabled,
         )

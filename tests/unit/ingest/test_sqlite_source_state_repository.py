@@ -12,10 +12,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from whale.ingest.adapters.state import sqlite_source_state_cache as repository_module
 from whale.ingest.adapters.state.sqlite_source_state_cache import (
     SqliteSourceStateCache,
-)
-from whale.ingest.framework.persistence.base import Base
-from whale.ingest.framework.persistence.orm.variable_state_orm import (
-    VariableStateORM,
+    _CacheBase,
+    _VariableStateRow,
 )
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
 
@@ -23,7 +21,7 @@ from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
 def test_store_many_updates_one_state_row_per_device_model_variable() -> None:
     """Keep one state row per device code, model id and variable key."""
     engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    _CacheBase.metadata.create_all(engine)
     session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
 
     @contextmanager
@@ -65,10 +63,10 @@ def test_store_many_updates_one_state_row_per_device_model_variable() -> None:
 
         rows = list(
             session.scalars(
-                select(VariableStateORM).order_by(
-                    VariableStateORM.device_code,
-                    VariableStateORM.model_id,
-                    VariableStateORM.variable_key,
+                select(_VariableStateRow).order_by(
+                    _VariableStateRow.device_code,
+                    _VariableStateRow.model_id,
+                    _VariableStateRow.variable_key,
                 )
             )
         )
@@ -92,7 +90,7 @@ def test_store_many_updates_one_state_row_per_device_model_variable() -> None:
 def test_read_snapshot_returns_full_latest_state_cache() -> None:
     """Read the full current variable_state snapshot from SQLite."""
     engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    _CacheBase.metadata.create_all(engine)
     session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
 
     @contextmanager

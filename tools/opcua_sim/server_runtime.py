@@ -246,25 +246,35 @@ class OpcUaServerRuntime:
         variable_specs: dict[str, tuple[str, float, str]],
     ) -> None:
         started_at = time.monotonic()
-        while not self._stop_updates.wait(self._config.update_interval_seconds):
-            elapsed_seconds = time.monotonic() - started_at
+        tick = 0
+        while not self._stop_updates.is_set():
+            tick_start = time.monotonic()
+            elapsed_seconds = tick_start - started_at
+
+            next_values = []
             for node_id, (variable_name, mean, dt_name) in variable_specs.items():
-                try:
-                    next_value = build_simulated_variable_value(
-                        variable_name, mean, elapsed_seconds,
-                        self._random.gauss(0.0, abs(mean) * DEFAULT_STDDEV_RATIO),
-                    )
-                    if dt_name == "Int32":
-                        server.get_node(node_id).write_value(
-                            ua.Variant(int(next_value), ua.VariantType.Int32))
-                    elif dt_name == "Boolean":
-                        server.get_node(node_id).write_value(
-                            ua.Variant(next_value >= 0.5, ua.VariantType.Boolean))
-                    elif dt_name == "String":
-                        server.get_node(node_id).write_value(
-                            ua.Variant(str(next_value), ua.VariantType.String))
-                    else:
-                        server.get_node(node_id).write_value(
-                            ua.Variant(next_value, ua.VariantType.Double))
-                except Exception:
-                    pass
+                next_value = build_simulated_variable_value(
+                    variable_name, mean, elapsed_seconds,
+                    self._random.gauss(0.0, abs(mean) * DEFAULT_STDDEV_RATIO),
+                )
+                if dt_name == "Int32":
+                    next_values.append(ua.Variant(int(next_value), ua.VariantType.Int32))
+                elif dt_name == "Boolean":
+                    next_values.append(ua.Variant(next_value >= 0.5, ua.VariantType.Boolean))
+                elif dt_name == "String":
+                    next_values.append(ua.Variant(str(next_value), ua.VariantType.String))
+                else:
+                    next_values.append(ua.Variant(next_value, ua.VariantType.Double))
+
+            node_ids = list(variable_specs.keys())
+            try:
+                server.write_values(node_ids, next_values)
+            except Exception:
+                pass
+
+            tick += 1
+            elapsed = time.monotonic() - started_at
+            next_tick = (tick + 1) * self._config.update_interval_seconds
+            sleep_time = next_tick - elapsed
+            if sleep_time > 0:
+                self._stop_updates.wait(sleep_time)

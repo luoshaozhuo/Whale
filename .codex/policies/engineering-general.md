@@ -77,6 +77,40 @@ Do not apply this document to:
 - Do not introduce new dependencies without clear need.
 - Prefer existing utilities over adding new abstractions.
 
+### 4.4 Data access — SQLAlchemy first
+
+Data access follows a progressive-disclosure rule: start with the simplest
+tool that satisfies the query and escalate only when there is a concrete,
+demonstrated need.
+
+| Tier | Approach                                          | When                                                                                       |
+| ---- | ------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| 1    | SQLAlchemy ORM query builder                      | Default — every new query starts here                                                      |
+| 2    | Raw SQL via `text()`                              | Complex queries the ORM cannot express cleanly (CTEs, window functions, vendor-specific DDL) |
+| 3    | Dedicated query function / repository method      | The same query is reused in three or more call sites                                       |
+| 4    | DAO or query-object class                         | Query carries state, needs multiple execution strategies, or must compose several raw-SQL fragments |
+
+Constraints:
+
+- **Do not create DAO wrappers for single-call-site ORM queries.**
+  If a query is a one-liner `select(Model).where(…)` and used in exactly
+  one place, it belongs inline at the call site.
+- **Raw SQL must live close to its consumer**, not in a generic "utils" or
+  "helpers" module, unless it is reused per tier-3 or tier-4.
+- **Prefer repository methods over free functions.** If a query is reused,
+  add it as a method on the existing repository or adapter that already
+  owns that domain concept.  Do not create a standalone DAO for one or two
+  queries.
+- **Avoid public static query helpers** that take a session as a
+  parameter — session-coupled queries belong on instance methods of the
+  class that already holds the session.
+
+### 4.5 Avoid speculative abstraction
+
+Do not introduce query methods, views, or path-manipulation utilities
+because they *might* be needed.  Add them only when a concrete call site
+requires them.
+
 ---
 
 ## 5. Refactoring rules

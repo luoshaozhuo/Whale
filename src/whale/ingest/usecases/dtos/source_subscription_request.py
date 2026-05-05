@@ -21,3 +21,5 @@ class SourceSubscriptionRequest:
     items: list[AcquisitionItemData]
     stop_requested: Callable[[], bool] | None = None
     state_received: SubscriptionStateHandler | None = None
+    resolved_endpoint: str | None = None
+    resolved_node_ids: list[str] | None = None

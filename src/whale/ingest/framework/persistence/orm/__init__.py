@@ -1,27 +1,9 @@
-"""Ingest ORM models (deprecated — migrated to whale.shared.persistence.orm).
+"""Ingest ORM models — fully consolidated into whale.shared.persistence.orm.
 
-DeviceORM and SubstationORM have been removed (replaced by AssetInstance /
-OrganizationLevel in whale.shared.persistence.orm).
+All former ingest ORM models have been replaced by shared-ORM equivalents:
+  - whale.shared.persistence.orm.AcquisitionTask     (table acq_task)
+  - whale.shared.persistence.orm.DOState             (table acq_do_state)
+  - whale.shared.persistence.orm.StateSnapshotOutbox (table acq_outbox)
 """
 
-from whale.ingest.framework.persistence.orm.acquisition_model_orm import (
-    AcquisitionModelORM,
-)
-from whale.ingest.framework.persistence.orm.acquisition_task_orm import (
-    AcquisitionTaskORM,
-)
-from whale.ingest.framework.persistence.orm.acquisition_variable_orm import (
-    AcquisitionVariableORM,
-)
-from whale.ingest.framework.persistence.orm.state_snapshot_outbox_orm import (
-    StateSnapshotOutboxORM,
-)
-from whale.ingest.framework.persistence.orm.variable_state_orm import VariableStateORM
-
-__all__ = [
-    "AcquisitionModelORM",
-    "AcquisitionTaskORM",
-    "AcquisitionVariableORM",
-    "StateSnapshotOutboxORM",
-    "VariableStateORM",
-]
+__all__: list[str] = []

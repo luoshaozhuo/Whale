@@ -8,10 +8,8 @@ from pathlib import Path
 
 from sqlalchemy import inspect
 
-from tools.opcua_sim.__main__ import DEFAULT_CONFIG_PATH, DEFAULT_NODESET_PATH
 from whale.ingest.config import CONFIG, PostgresDatabaseConfig, SqliteDatabaseConfig
 from whale.ingest.framework.persistence.base import Base
-from whale.ingest.framework.persistence.sample_data_loader import load_sample_data
 from whale.ingest.framework.persistence.session import engine, session_scope
 
 
@@ -32,7 +30,10 @@ def init_db() -> None:
 def initialize_db(*, insert_sample_data: bool) -> None:
     """Create ORM tables and optionally load the default sample data."""
     import_module("whale.ingest.framework.persistence.orm")
+    import_module("whale.shared.persistence.orm")
     Base.metadata.create_all(bind=engine)
+    from whale.shared.persistence import Base as SharedBase
+    SharedBase.metadata.create_all(bind=engine)
     if insert_sample_data:
         load_default_sample_data()
 
@@ -45,12 +46,9 @@ def reset_db() -> None:
 
 def load_default_sample_data() -> None:
     """Load the built-in sample data templates into the current ingest database."""
-    with session_scope() as session:
-        load_sample_data(
-            session=session,
-            connection_config_path=DEFAULT_CONFIG_PATH.resolve(),
-            nodeset_path=DEFAULT_NODESET_PATH.resolve(),
-        )
+    from whale.shared.persistence.template.sample_data import generate_all_sample_data
+
+    generate_all_sample_data()
 
 
 def _resolve_database_path() -> Path:

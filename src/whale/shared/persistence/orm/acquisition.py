@@ -1,4 +1,4 @@
-"""采集任务、DO 状态缓存与发件箱模块."""
+"""采集任务与点位状态模块."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -23,85 +24,122 @@ from whale.shared.persistence import Base
 
 
 class AcquisitionTask(Base):
+    """采集任务配置 — 以 LD 实例为核心的采集调度记录."""
+
     __tablename__ = "acq_task"
     __table_args__ = (
         CheckConstraint(
-            "acquisition_mode IN ('ONCE', 'POLLING', 'SUBSCRIPTION')",
+            "acquisition_mode IN ('READ_ONCE', 'POLLING', 'SUBSCRIBE', 'REPORT')",
             name="ck_acq_task_acquisition_mode",
         ),
+        CheckConstraint(
+            "task_status IN ('STARTED', 'RUNNING', 'STOPPING', 'ERROR', 'SUCCESS', 'STOPPED')",
+            name="ck_acq_task_status",
+        ),
+        UniqueConstraint("ld_instance_id", "acquisition_mode", name="uq_acq_task_ld_mode"),
         {"comment": "采集任务配置"},
     )
 
-    task_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="任务主键")
-    task_name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, comment="任务名称")
-    asset_instance_id: Mapped[int] = mapped_column(
-        ForeignKey("asset_instance.asset_instance_id"), nullable=False, index=True, comment="目标资产实例"
+    task_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="采集任务主键")
+    task_name: Mapped[str] = mapped_column(
+        String(255), unique=True, nullable=False, comment="采集任务名称，如 task_ZB-WTG-001"
     )
-    asset_type_id: Mapped[int] = mapped_column(
-        ForeignKey("asset_type.asset_type_id"), nullable=False, index=True, comment="资产类型"
+    ld_instance_id: Mapped[int] = mapped_column(
+        ForeignKey("scada_ld_instance.ld_instance_id"), nullable=False, index=True,
+        comment="LD 实例 ID，采集任务的核心对象；通过它可确定 endpoint、asset_instance、signal_profile"
     )
-    ied_id: Mapped[int] = mapped_column(
-        ForeignKey("scada_ied.ied_id"), nullable=False, index=True, comment="采集测点模板（IED）"
+    acquisition_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False,
+        comment="采集模式：READ_ONCE / POLLING / SUBSCRIBE / REPORT"
     )
-    protocol_type: Mapped[str] = mapped_column(String(64), nullable=False, comment="协议类型")
-    endpoint: Mapped[str] = mapped_column(String(512), nullable=False, comment="协议连接端点")
-    namespace_uri: Mapped[Optional[str]] = mapped_column(String(512), nullable=True, comment="OPC UA 命名空间")
-    sampling_interval_ms: Mapped[int] = mapped_column(Integer, nullable=False, comment="采集周期（毫秒）")
-    acquisition_mode: Mapped[str] = mapped_column(String(32), nullable=False, comment="采集模式")
-    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="优先级")
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, comment="是否启用")
-    params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, comment="协议保留参数")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    task_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="STOPPED",
+        comment="任务生命周期状态：STARTED / RUNNING / STOPPING / ERROR / SUCCESS / STOPPED"
+    )
+    request_timeout_ms: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=5000, comment="单次 read 请求超时，单位毫秒"
+    )
+    poll_interval_ms: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1000, comment="采集轮询周期，单位毫秒"
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, comment="配置态启停标记，不表示运行状态"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), comment="创建时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now(), comment="更新时间"
+    )
 
-    asset_instance: Mapped["AssetInstance"] = relationship(back_populates="acquisition_tasks")
-    do_states: Mapped[list["DOState"]] = relationship(back_populates="task")
-    outbox_messages: Mapped[list["StateSnapshotOutbox"]] = relationship(back_populates="task")
 
+class AcqSignalState(Base):
+    """点位最新状态 — 保存每个 LD 实例 + ProfileItem 解析后的最新值."""
 
-class DOState(Base):
-    """DO 测点最新状态缓存 — 记录每个 (资产实例, DO模板) 的最新采集值."""
-
-    __tablename__ = "acq_do_state"
+    __tablename__ = "acq_signal_state"
     __table_args__ = (
-        UniqueConstraint("asset_instance_id", "do_id", name="uq_acq_do_state"),
-        {"comment": "DO 测点最新状态缓存"},
+        UniqueConstraint("ld_instance_id", "profile_item_id", name="uq_signal_state"),
+        {"comment": "点位最新状态"},
     )
 
-    do_state_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="状态主键")
-    task_id: Mapped[int] = mapped_column(ForeignKey("acq_task.task_id"), nullable=False, index=True, comment="所属采集任务")
+    signal_state_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="最新状态主键")
+    ld_instance_id: Mapped[int] = mapped_column(
+        ForeignKey("scada_ld_instance.ld_instance_id"), nullable=False, comment="LD 实例 ID"
+    )
+    profile_item_id: Mapped[int] = mapped_column(
+        ForeignKey("scada_signal_profile_item.profile_item_id"), nullable=False, comment="点位方案明细 ID"
+    )
     asset_instance_id: Mapped[int] = mapped_column(
-        ForeignKey("asset_instance.asset_instance_id"), nullable=False, index=True, comment="所属资产实例"
+        ForeignKey("asset_instance.asset_instance_id"), nullable=False, index=True,
+        comment="所属资产实例 ID，通常冗余自 scada_ld_instance.asset_instance_id，便于查询"
     )
-    do_id: Mapped[int] = mapped_column(
-        ForeignKey("scada_do.do_id"), nullable=False, index=True, comment="关联 DO 模板"
+    task_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="采集任务 ID")
+    resolved_signal_path: Mapped[Optional[str]] = mapped_column(
+        String(512), nullable=True,
+        comment="实际解析后的采集路径，如 WTG_001/MMXU1.TotW.mag.f，可由 path_prefix + relative_path 生成"
     )
-    value: Mapped[str] = mapped_column(Text, nullable=False, comment="最新值（序列化）")
-    source_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, comment="数据源时间戳")
-    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), comment="接收时间戳")
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now(), comment="本地更新时间戳")
+    value: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="最新值（序列化）")
+    numeric_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="数值型冗余值，用于统计、告警、排序、聚合")
+    quality: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="质量位，可为空")
+    source_observed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="源端观测时间，可为空"
+    )
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), comment="平台接收时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), comment="状态更新时间"
+    )
+    raw_payload_json: Mapped[dict] = mapped_column(JSON, default=dict, comment="原始采集载荷")
 
-    task: Mapped["AcquisitionTask"] = relationship(back_populates="do_states")
-    do: Mapped["DO"] = relationship(back_populates="do_states")
 
+class AcqSignalSample(Base):
+    """点位历史样本 — 保存历史采集值."""
 
-class StateSnapshotOutbox(Base):
-    """状态快照发件箱."""
+    __tablename__ = "acq_signal_sample"
+    __table_args__ = {"comment": "点位历史样本"}
 
-    __tablename__ = "acq_outbox"
-    __table_args__ = {"comment": "状态快照发件箱"}
-
-    outbox_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="发件箱主键")
-    task_id: Mapped[int] = mapped_column(ForeignKey("acq_task.task_id"), nullable=False, index=True, comment="所属采集任务")
+    sample_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="样本主键")
+    ld_instance_id: Mapped[int] = mapped_column(
+        ForeignKey("scada_ld_instance.ld_instance_id"), nullable=False, comment="LD 实例 ID"
+    )
+    profile_item_id: Mapped[int] = mapped_column(
+        ForeignKey("scada_signal_profile_item.profile_item_id"), nullable=False, comment="点位方案明细 ID"
+    )
     asset_instance_id: Mapped[int] = mapped_column(
-        ForeignKey("asset_instance.asset_instance_id"), nullable=False, index=True, comment="所属资产实例"
+        ForeignKey("asset_instance.asset_instance_id"), nullable=False, index=True, comment="所属资产实例 ID"
     )
-    message_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True, comment="消息唯一标识")
-    snapshot_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True, comment="快照标识")
-    schema_version: Mapped[str] = mapped_column(String(32), nullable=False, comment="schema 版本")
-    message_type: Mapped[str] = mapped_column(String(64), nullable=False, comment="消息类型")
-    payload: Mapped[str] = mapped_column(Text, nullable=False, comment="序列化 JSON 消息体")
-    snapshot_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, comment="快照时间戳")
-    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), comment="发件时间戳")
-
-    task: Mapped["AcquisitionTask"] = relationship(back_populates="outbox_messages")
+    task_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="采集任务 ID")
+    resolved_signal_path: Mapped[Optional[str]] = mapped_column(
+        String(512), nullable=True, comment="实际采集路径"
+    )
+    value: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="样本值")
+    numeric_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="数值型冗余值")
+    quality: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="质量位")
+    source_observed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="源端观测时间"
+    )
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), comment="平台接收时间"
+    )
+    raw_payload_json: Mapped[dict] = mapped_column(JSON, default=dict, comment="原始采集载荷")

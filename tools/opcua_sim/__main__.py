@@ -22,7 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--from-db",
         action="store_true",
         help="Read turbine configurations and variable definitions from the whale database "
-             "(acq_task + v_measurement_point).  Default: use YAML + static NodeSet.",
+             "(acq_task + v_opcua_measurement_point).  Default: use YAML + static NodeSet.",
     )
     parser.add_argument(
         "--nodeset-path",

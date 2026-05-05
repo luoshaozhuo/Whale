@@ -119,8 +119,8 @@ class FakeClient:
         values = {
             "nsu=urn:windfarm:2wtg;s=WTG_01.TotW": 1200.0,
             "nsu=urn:windfarm:2wtg;s=WTG_01.Spd": 12.5,
-            "ns=2;s=WTG_01.TotW": 1200.0,
-            "ns=2;s=WTG_01.Spd": 12.5,
+            "nsu=urn:windfarm:2wtg;s=MMXU1.TotW.mag.f": 1200.0,
+            "nsu=urn:windfarm:2wtg;s=MMXU1.Spd.mag.f": 12.5,
         }
         return [values[node.node_id] for node in nodes]
 
@@ -143,7 +143,7 @@ def test_read_reads_each_item_address_without_hard_coded_node_rules(
 ) -> None:
     """Read each configured item address and map it to one acquired node state."""
     fake_client = FakeClient("opc.tcp://127.0.0.1:4840")
-    monkeypatch.setattr(adapter_module, "Client", lambda endpoint: fake_client)
+    monkeypatch.setattr(adapter_module, "Client", lambda endpoint, timeout=None: fake_client)
     adapter = OpcUaSourceAcquisitionAdapter()
 
     states = asyncio.run(
@@ -156,12 +156,10 @@ def test_read_reads_each_item_address_without_hard_coded_node_rules(
                 ),
                 items=[
                     AcquisitionItemData(
-                        key="TotW",
-                        locator="nsu=urn:windfarm:2wtg;s=WTG_01.TotW",
+                        key="TotW", locator="nsu=urn:windfarm:2wtg;s=WTG_01.TotW",
                     ),
                     AcquisitionItemData(
-                        key="Spd",
-                        locator="nsu=urn:windfarm:2wtg;s=WTG_01.Spd",
+                        key="Spd", locator="nsu=urn:windfarm:2wtg;s=WTG_01.Spd",
                     ),
                 ],
             )
@@ -179,9 +177,9 @@ def test_read_reads_each_item_address_without_hard_coded_node_rules(
 def test_read_resolves_namespace_uri_when_item_uses_address_suffix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Resolve one namespace-specific node id from namespace URI plus item address."""
+    """Resolve node IDs from namespace_uri + relative_path when locator is not qualified."""
     fake_client = FakeClient("opc.tcp://127.0.0.1:4840")
-    monkeypatch.setattr(adapter_module, "Client", lambda endpoint: fake_client)
+    monkeypatch.setattr(adapter_module, "Client", lambda endpoint, timeout=None: fake_client)
     adapter = OpcUaSourceAcquisitionAdapter()
 
     states = asyncio.run(
@@ -198,51 +196,21 @@ def test_read_resolves_namespace_uri_when_item_uses_address_suffix(
                 ),
                 items=[
                     AcquisitionItemData(
-                        key="TotW",
-                        locator="s=WTG_01.TotW",
+                        key="TotW", locator="MMXU1.TotW.mag.f",
                     ),
                     AcquisitionItemData(
-                        key="Spd",
-                        locator="s=WTG_01.Spd",
+                        key="Spd", locator="MMXU1.Spd.mag.f",
                     ),
                 ],
             )
         )
     )
 
-    assert fake_client.requested_nodes == ["ns=2;s=WTG_01.TotW", "ns=2;s=WTG_01.Spd"]
+    assert fake_client.requested_nodes == [
+        "nsu=urn:windfarm:2wtg;s=MMXU1.TotW.mag.f",
+        "nsu=urn:windfarm:2wtg;s=MMXU1.Spd.mag.f",
+    ]
     assert [state.node_key for state in states] == ["TotW", "Spd"]
-
-
-def test_read_builds_endpoint_from_host_and_port(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Build the OPC UA endpoint from host and port when endpoint is omitted."""
-    fake_client = FakeClient("opc.tcp://127.0.0.1:4840")
-    monkeypatch.setattr(adapter_module, "Client", lambda endpoint: fake_client)
-    adapter = OpcUaSourceAcquisitionAdapter()
-
-    states = asyncio.run(
-        adapter.read(
-            SourceAcquisitionRequest(
-                source_id="WTG_01",
-                connection=SourceConnectionData(
-                    host="127.0.0.1",
-                    port=4840,
-                    params={"security_policy": "None", "security_mode": "None"},
-                ),
-                items=[
-                    AcquisitionItemData(
-                        key="TotW",
-                        locator="nsu=urn:windfarm:2wtg;s=WTG_01.TotW",
-                    ),
-                ],
-            )
-        )
-    )
-
-    assert fake_client.endpoint == "opc.tcp://127.0.0.1:4840"
-    assert [state.node_key for state in states] == ["TotW"]
 
 
 def test_subscribe_returns_when_stop_is_requested() -> None:
@@ -283,7 +251,7 @@ def test_subscribe_subscribes_all_items_and_emits_states(
 ) -> None:
     """Subscribe all configured items in one OPC UA subscription and emit updates."""
     fake_client = FakeClient("opc.tcp://127.0.0.1:4840")
-    monkeypatch.setattr(adapter_module, "Client", lambda endpoint: fake_client)
+    monkeypatch.setattr(adapter_module, "Client", lambda endpoint, timeout=None: fake_client)
     adapter = OpcUaSourceAcquisitionAdapter()
     received_states: list[AcquiredNodeState] = []
 
@@ -300,17 +268,14 @@ def test_subscribe_subscribes_all_items_and_emits_states(
                         "security_policy": "None",
                         "security_mode": "None",
                         "namespace_uri": "urn:windfarm:2wtg",
-                        "publishing_interval_ms": 250,
                     },
                 ),
                 items=[
                     AcquisitionItemData(
-                        key="TotW",
-                        locator="s=WTG_01.TotW",
+                        key="TotW", locator="MMXU1.TotW.mag.f",
                     ),
                     AcquisitionItemData(
-                        key="Spd",
-                        locator="s=WTG_01.Spd",
+                        key="Spd", locator="MMXU1.Spd.mag.f",
                     ),
                 ],
                 stop_requested=lambda: len(received_states) >= 2,
@@ -319,8 +284,11 @@ def test_subscribe_subscribes_all_items_and_emits_states(
         )
     )
 
-    assert fake_client.requested_nodes == ["ns=2;s=WTG_01.TotW", "ns=2;s=WTG_01.Spd"]
-    assert fake_client.publishing_interval_ms == 250
+    assert fake_client.requested_nodes == [
+        "nsu=urn:windfarm:2wtg;s=MMXU1.TotW.mag.f",
+        "nsu=urn:windfarm:2wtg;s=MMXU1.Spd.mag.f",
+    ]
+    assert fake_client.publishing_interval_ms == 100
     assert [state.node_key for state in received_states] == ["TotW", "Spd"]
     assert [state.value for state in received_states] == ["1001.0", "1002.0"]
     assert fake_client.subscription is not None

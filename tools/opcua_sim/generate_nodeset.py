@@ -134,11 +134,10 @@ def generate_nodeset_from_measurement_points(
     turbine_names: list[str],
     field_means: dict[str, float] | None = None,
 ) -> tuple[str, dict[str, float]]:
-    """Generate OPC UA NodeSet XML from v_measurement_point query results.
+    """Generate OPC UA NodeSet XML from v_opcua_measurement_point query results.
 
     Args:
-        measurement_points: Iterable of dicts with keys matching v_measurement_point:
-            do_name, data_type, unit, display_name, constraint_expr.
+        measurement_points: Iterable of dicts with keys: do_name, data_type, unit, display_name.
         turbine_names: List of turbine BrowseNames (e.g. ["ZB-WTG-001", ...]).
         field_means: Optional pre-built {do_name: mean_value} dict. If None,
             means default to 0.0.

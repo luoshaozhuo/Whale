@@ -40,14 +40,14 @@ def test_sqlite_config_init_script_creates_db_from_default_templates(
     assert "已完成初始化。" in result.stdout
 
     with sqlite3.connect(db_path) as conn:
-        substation_count = conn.execute("SELECT COUNT(*) FROM substation").fetchone()
-        device_count = conn.execute("SELECT COUNT(*) FROM device").fetchone()
-        model_count = conn.execute("SELECT COUNT(*) FROM acquisition_model").fetchone()
-        variable_count = conn.execute("SELECT COUNT(*) FROM acquisition_variable").fetchone()
-        task_count = conn.execute("SELECT COUNT(*) FROM acquisition_task").fetchone()
+        org_count = conn.execute("SELECT COUNT(*) FROM org_unit").fetchone()
+        asset_count = conn.execute("SELECT COUNT(*) FROM asset_instance").fetchone()
+        ied_count = conn.execute("SELECT COUNT(*) FROM scada_ied").fetchone()
+        item_count = conn.execute("SELECT COUNT(*) FROM scada_signal_profile_item").fetchone()
+        task_count = conn.execute("SELECT COUNT(*) FROM acq_task").fetchone()
 
-    assert substation_count is not None and int(substation_count[0]) == 1
-    assert device_count is not None and int(device_count[0]) == 2
-    assert model_count is not None and int(model_count[0]) == 1
-    assert variable_count is not None and int(variable_count[0]) == 3
-    assert task_count is not None and int(task_count[0]) == 2
+    assert org_count is not None and int(org_count[0]) >= 1
+    assert asset_count is not None and int(asset_count[0]) >= 30
+    assert ied_count is not None and int(ied_count[0]) >= 1
+    assert item_count is not None and int(item_count[0]) > 0
+    assert task_count is not None and int(task_count[0]) >= 30

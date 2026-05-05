@@ -1,4 +1,4 @@
-"""Database-backed OPC UA acquisition-definition repository for ingest."""
+"""Database-backed OPC UA acquisition-definition repository."""
 
 from __future__ import annotations
 
@@ -17,21 +17,13 @@ from whale.ingest.usecases.dtos.source_acquisition_definition import (
     SourceAcquisitionDefinition,
 )
 from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionData
-from whale.ingest.usecases.dtos.source_runtime_config_data import (
-    SourceRuntimeConfigData,
-)
+from whale.ingest.usecases.dtos.source_runtime_config_data import SourceRuntimeConfigData
 from whale.shared.persistence.orm import (
-    AcquisitionTask,
-    AssetInstance,
-    DO,
-    IED,
-    LD,
-    LN,
+    AcquisitionTask, CommunicationEndpoint, LDInstance, SignalProfileItem,
 )
 
 
 class OpcUaSourceAcquisitionDefinitionRepository(SourceAcquisitionDefinitionPort):
-    """Load OPC UA acquisition config from tasks, assets and the IED → DO hierarchy."""
 
     def __init__(
         self,
@@ -47,62 +39,42 @@ class OpcUaSourceAcquisitionDefinitionRepository(SourceAcquisitionDefinitionPort
             task = session.get(AcquisitionTask, runtime_config.runtime_config_id)
             if task is None:
                 raise LookupError(
-                    f"Acquisition task `{runtime_config.runtime_config_id}` was not found."
+                    f"AcquisitionTask `{runtime_config.runtime_config_id}` not found."
                 )
 
-            asset = session.get(AssetInstance, task.asset_instance_id)
-            if asset is None:
-                raise LookupError(
-                    f"AssetInstance `{task.asset_instance_id}` was not found for task `{task.task_id}`."
-                )
+            ld = session.get(LDInstance, task.ld_instance_id)
+            if ld is None:
+                raise LookupError(f"LDInstance `{task.ld_instance_id}` not found.")
 
-            ied_id = task.ied_id
-            if ied_id is None:
-                raise LookupError(f"Task `{task.task_id}` has no ied_id configured.")
+            ep = session.get(CommunicationEndpoint, ld.endpoint_id)
+            if ep is None:
+                raise LookupError(f"CommunicationEndpoint `{ld.endpoint_id}` not found.")
 
-            ied = session.get(IED, ied_id)
-            if ied is None:
-                raise LookupError(f"IED `{ied_id}` was not found for task `{task.task_id}`.")
+            if ld.signal_profile_id is None:
+                raise LookupError(f"LDInstance `{ld.ld_instance_id}` has no signal_profile_id.")
 
-            # Query all DOs under this IED (through DO → LN → LD join)
-            do_rows = list(
-                session.scalars(
-                    select(DO)
-                    .join(DO.ln)
-                    .join(LN.ld)
-                    .where(LD.ied_id == ied_id)
-                    .order_by(DO.do_id)
-                )
-            )
-            if not do_rows:
-                raise LookupError(
-                    f"No DO found under IED `{ied.ied_name}` for task `{task.task_id}`."
-                )
+            items = session.scalars(
+                select(SignalProfileItem)
+                .where(SignalProfileItem.signal_profile_id == ld.signal_profile_id)
+                .order_by(SignalProfileItem.profile_item_id)
+            ).all()
 
-            _model_id = ied.ied_name
-            _asset_code = asset.asset_code
-            _endpoint = task.endpoint
-            _params = dict(task.params)
-            _items = [
-                AcquisitionItemData(
-                    key=row.do_name,
-                    locator=f"s={_asset_code}.{row.do_name}",
-                    locator_type="node_path",
-                    display_name=row.display_name or row.do_name,
-                    params={},
-                )
-                for row in do_rows
-            ]
+            scheme = "opc.https" if ep.transport == "HTTPS" else "opc.tcp"
+            ep_url = f"{scheme}://{ep.host}:{ep.port}" if ep.host and ep.port else ""
 
         return SourceAcquisitionDefinition(
-            model_id=_model_id,
+            ld_id=ld.ld_name,
             connection=SourceConnectionData(
-                endpoint=_endpoint,
-                host=None,
-                port=None,
-                username=None,
-                password=None,
-                params=_params,
+                endpoint=ep_url,
+                params={"namespace_uri": ep.namespace_uri or ""},
             ),
-            items=_items,
+            items=[
+                AcquisitionItemData(
+                    key=item.do_name,
+                    locator=f"{ld.path_prefix}/{item.relative_path}",
+                )
+                for item in items
+            ],
+            request_timeout_ms=task.request_timeout_ms,
+            poll_interval_ms=task.poll_interval_ms,
         )

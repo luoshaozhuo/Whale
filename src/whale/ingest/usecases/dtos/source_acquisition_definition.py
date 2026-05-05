@@ -12,6 +12,8 @@ from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionDa
 class SourceAcquisitionDefinition:
     """Describe the source acquisition config for one runtime config."""
 
-    model_id: str
+    ld_id: str
     connection: SourceConnectionData
     items: list[AcquisitionItemData]
+    request_timeout_ms: int = 5000
+    poll_interval_ms: int = 1000

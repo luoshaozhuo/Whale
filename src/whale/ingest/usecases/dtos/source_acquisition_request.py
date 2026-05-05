@@ -15,3 +15,6 @@ class SourceAcquisitionRequest:
     source_id: str
     connection: SourceConnectionData
     items: list[AcquisitionItemData]
+    resolved_endpoint: str | None = None
+    resolved_node_ids: list[str] | None = None
+    request_timeout_ms: int = 5000

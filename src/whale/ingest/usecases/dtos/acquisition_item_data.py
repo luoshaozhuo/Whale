@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
-AcquisitionParamValue = str | int | float | bool | None
+from dataclasses import dataclass
 
 
 @dataclass(slots=True)
@@ -13,6 +11,3 @@ class AcquisitionItemData:
 
     key: str
     locator: str
-    locator_type: str | None = None
-    display_name: str | None = None
-    params: dict[str, AcquisitionParamValue] = field(default_factory=dict)

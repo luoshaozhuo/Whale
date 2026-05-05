@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
-from sqlalchemy.dialects.sqlite import insert
-
-from whale.ingest.framework.persistence.orm.variable_state_orm import (
-    VariableStateORM,
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    select,
 )
+from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.orm import DeclarativeBase
+
 from whale.ingest.framework.persistence.session import session_scope
 from whale.ingest.ports.state import (
     SourceStateCachePort,
@@ -19,8 +25,36 @@ from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
 from whale.ingest.usecases.dtos.cached_source_state import CachedSourceState
 
 
+class _CacheBase(DeclarativeBase):
+    """Private declarative base for the variable-state cache table."""
+
+
+class _VariableStateRow(_CacheBase):
+    """Denormalised variable-state row (implementation detail of SqliteSourceStateCache)."""
+
+    __tablename__ = "variable_state"
+    __table_args__ = (
+        UniqueConstraint("device_code", "model_id", "variable_key",
+                         name="uq_variable_state_device_model_variable"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    device_code = Column(String(255), nullable=False)
+    model_id = Column(String(255), nullable=False)
+    variable_key = Column(String(255), nullable=False)
+    value = Column(Text, nullable=False)
+    source_observed_at = Column(DateTime(timezone=True), nullable=False)
+    received_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+
+
 class SqliteSourceStateCache(SourceStateCachePort, SourceStateSnapshotReaderPort):
     """Persist and read the local latest-state cache from SQLite."""
+
+    def __init__(self) -> None:
+        """Ensure the variable_state table exists."""
+        with session_scope() as session:
+            _CacheBase.metadata.create_all(bind=session.get_bind(), checkfirst=True)
 
     def store_many(
         self,
@@ -46,7 +80,7 @@ class SqliteSourceStateCache(SourceStateCachePort, SourceStateSnapshotReaderPort
             return 0
 
         with session_scope() as session:
-            statement = insert(VariableStateORM).values(rows)
+            statement = insert(_VariableStateRow).values(rows)
             upsert_statement = statement.on_conflict_do_update(
                 index_elements=["device_code", "model_id", "variable_key"],
                 set_={
@@ -66,10 +100,10 @@ class SqliteSourceStateCache(SourceStateCachePort, SourceStateSnapshotReaderPort
         with session_scope() as session:
             rows = list(
                 session.scalars(
-                    select(VariableStateORM).order_by(
-                        VariableStateORM.device_code,
-                        VariableStateORM.model_id,
-                        VariableStateORM.variable_key,
+                    select(_VariableStateRow).order_by(
+                        _VariableStateRow.device_code,
+                        _VariableStateRow.model_id,
+                        _VariableStateRow.variable_key,
                     )
                 )
             )

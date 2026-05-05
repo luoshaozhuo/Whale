@@ -48,14 +48,14 @@ class PullRole:
             return SourceStateData(
                 runtime_config_id=runtime_config.runtime_config_id,
                 acquisition_status=AcquisitionStatus.FAILED,
-                model_id=config.model_id,
+                model_id=config.ld_id,
                 last_error=str(exc),
             )
 
         return SourceStateData(
             runtime_config_id=runtime_config.runtime_config_id,
             acquisition_status=(AcquisitionStatus.SUCCEEDED if states else AcquisitionStatus.EMPTY),
-            model_id=config.model_id,
+            model_id=config.ld_id,
             acquired_states=states,
         )
 
@@ -64,9 +64,18 @@ class PullRole:
         runtime_config: SourceRuntimeConfigData,
         config: SourceAcquisitionDefinition,
     ) -> SourceAcquisitionRequest:
-        """Build one acquisition request from source config data."""
+        """Build one acquisition request with pre-resolved endpoint and node IDs."""
+        ns_uri = config.connection.params.get("namespace_uri", "")
         return SourceAcquisitionRequest(
             source_id=runtime_config.source_id,
             connection=config.connection,
             items=list(config.items),
+            resolved_endpoint=config.connection.endpoint,
+            request_timeout_ms=config.request_timeout_ms,
+            resolved_node_ids=[
+                f"nsu={ns_uri};s={item.locator}"
+                if ns_uri and not item.locator.startswith(("ns=", "nsu="))
+                else item.locator
+                for item in config.items
+            ],
         )

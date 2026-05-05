@@ -26,6 +26,9 @@ class RedisHashClient(Protocol):
     def hgetall(self, name: str) -> Mapping[str, str]:
         """Return all hash fields and values."""
 
+    def pipeline(self) -> object:
+        """Return a Redis pipeline for batch operations."""
+
 
 @dataclass(frozen=True, slots=True)
 class RedisSourceStateCacheSettings:
@@ -110,11 +113,12 @@ class RedisSourceStateCache(SourceStateCachePort, SourceStateSnapshotReaderPort)
         model_id: str,
         acquired_states: list[AcquiredNodeState],
     ) -> int:
-        """Upsert latest-state rows into the Redis hash cache."""
+        """Upsert latest-state rows into the Redis hash cache (batched pipeline)."""
         if not acquired_states:
             return 0
 
         received_at = datetime.now(tz=UTC)
+        pipe = self._client.pipeline()
         for state in acquired_states:
             field = self._build_field_name(
                 station_id=self._settings.station_id,
@@ -134,7 +138,8 @@ class RedisSourceStateCache(SourceStateCachePort, SourceStateSnapshotReaderPort)
                     "updated_at": received_at.isoformat(),
                 }
             )
-            self._client.hset(self._settings.hash_key, field, payload)
+            pipe.hset(self._settings.hash_key, field, payload)
+        pipe.execute()
         return len(acquired_states)
 
     def read_snapshot(self) -> list[CachedSourceState]:

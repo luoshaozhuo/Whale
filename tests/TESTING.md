@@ -152,6 +152,57 @@ python -m whale.shared.persistence.template.sample_data
 
 ---
 
+## 负载测试
+
+负载测试脚本位于 [tests/tmp/load_test.py](tmp/load_test.py)，为标准 Python 脚本，可直接调用：
+
+```bash
+python tests/tmp/load_test.py --turbines 30 --hz 10 --samples 3
+```
+
+参数说明：
+- `--turbines N`: 最大风机数 (默认 30)
+- `--hz HZ`: 采集频率 (默认 10)
+- `--samples S`: 每轮采样数 (默认 3)
+
+测试产物：
+- `tests/tmp/load_test_report.md` — 测试报告
+- `tests/tmp/charts/` — 图表（延迟箱线图、时间戳分布、缩放曲线、延迟分解）
+
+### 最近测试结果 (2026-05-05)
+
+**测试条件**: 30 台风机，10Hz 采集，每台 20 变量，3 轮采样
+
+| 策略 | 单批次耗时 | P50 | P95 | 错误 |
+|------|-----------|-----|-----|------|
+| Sequential (one-by-one) | — | 6ms | 7ms | 0 |
+| Async gather (all-at-once) | 148ms | 148ms | 148ms | 0 |
+| ThreadPool (4 workers) | 207ms | 115ms | 200ms | 0 |
+| ThreadPool (8 workers) | 202ms | 120ms | 200ms | 0 |
+| ThreadPool-keep (16 workers) | 200ms | 155ms | 197ms | 0 |
+
+**缩放结果** (ThreadPool-keep, 8 workers):
+
+| 风机数 | P95 |
+|--------|-----|
+| 1 | 14ms |
+| 5 | 32ms |
+| 10 | 68ms |
+| 15 | 104ms |
+| 20 | 130ms |
+| 25 | 163ms |
+| 30 | 204ms |
+
+**结论**:
+- 单台机组全量 395 变量读取延迟 13ms（连接 5ms + 读取 6ms）
+- 30 台风机全部满足 <1s 延迟要求，线性缩放
+- ThreadPool(8 workers) 为最优策略
+- 源时间戳抖动 <0.2ms，满足 1/5 周期要求
+python -m whale.shared.persistence.template.sample_data
+```
+
+---
+
 ## conftest.py
 
 [tests/conftest.py](tests/conftest.py) 被 pytest 自动加载，提供共享 fixture：

@@ -90,14 +90,6 @@ def pg_session(pg_engine, _pg_tables_created):
     from sqlalchemy.orm import Session
 
     session = Session(bind=pg_engine, autoflush=False, expire_on_commit=False)
-    # Purge data from previous test runs
-    for table_name in (
-        "acquisition_task",
-        "acquisition_variable",
-        "acquisition_model",
-    ):
-        session.execute(text(f"DELETE FROM {table_name}"))
-    session.commit()
     yield session
     session.rollback()
     session.close()

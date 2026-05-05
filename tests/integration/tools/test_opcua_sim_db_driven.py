@@ -24,14 +24,14 @@ def test_from_database_creates_fleet_with_correct_endpoints() -> None:
 
 @pytest.mark.integration
 def test_single_server_starts_and_exposes_all_variables() -> None:
-    """Start one server from DB, connect, verify all v_measurement_point variables exist."""
+    """Start one server from DB, connect, verify all v_opcua_measurement_point variables exist."""
     from whale.shared.persistence.session import session_scope
     from sqlalchemy import text
 
     # Count expected variables from DB
     with session_scope() as s:
         row = s.execute(text(
-            "SELECT count(*) FROM v_measurement_point WHERE ied_name = 'IED_WTG_OPCUA'"
+            "SELECT count(*) FROM v_opcua_measurement_point WHERE ied_name = 'IED_WTG_OPCUA'"
         )).fetchone()
         expected_count = row[0]
 

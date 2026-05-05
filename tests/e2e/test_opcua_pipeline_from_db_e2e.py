@@ -24,19 +24,31 @@ def test_e2e_db_driven_pipeline_reads_wtg_and_publishes_to_kafka(
 
     # ── 1. Query shared DB for keys and turbine config ──────────────
     with session_scope() as s:
-        keys_rows = s.execute(text(
-            "SELECT DISTINCT do_name FROM v_measurement_point "
-            "WHERE ied_name = 'IED_WTG_OPCUA' ORDER BY do_name"
-        )).fetchall()
-        all_keys = tuple(r.do_name for r in keys_rows)
-        print(f"WTG variable keys from DB: {len(all_keys)}")
+        from sqlalchemy import select
+        from whale.shared.persistence.orm import (
+            AcquisitionTask, CommunicationEndpoint,
+            LDInstance, SignalProfileItem,
+        )
 
-        task_row = s.execute(text(
-            "SELECT endpoint, sampling_interval_ms, params "
-            "FROM acq_task WHERE task_name = 'task_ZB-WTG-001'"
-        )).mappings().fetchone()
-        assert task_row is not None
-        endpoint = task_row["endpoint"]
+        task = s.scalars(
+            select(AcquisitionTask).where(AcquisitionTask.task_name == "task_ZB-WTG-001")
+        ).first()
+        assert task is not None, "AcquisitionTask 'task_ZB-WTG-001' not found"
+
+        ld = s.get(LDInstance, task.ld_instance_id)
+        assert ld is not None, f"LDInstance {task.ld_instance_id} not found"
+
+        ep = s.get(CommunicationEndpoint, ld.endpoint_id)
+        assert ep is not None, f"CommunicationEndpoint {ld.endpoint_id} not found"
+        endpoint = f"opc.tcp://{ep.host}:{ep.port}" if ep.host and ep.port else ""
+
+        keys = s.scalars(
+            select(SignalProfileItem.do_name)
+            .where(SignalProfileItem.signal_profile_id == ld.signal_profile_id)
+            .order_by(SignalProfileItem.sort_order)
+        ).all()
+        all_keys = tuple(keys)
+        print(f"WTG variable keys from DB: {len(all_keys)}")
 
     # ── 2. Seed ingest DB ──────────────────────────────────────────
     from tests.e2e.helpers import seed_postgres_for_e2e
@@ -95,7 +107,6 @@ def test_e2e_db_driven_pipeline_reads_wtg_and_publishes_to_kafka(
         state_cache = RedisSourceStateCache(
             settings=RedisSourceStateCacheSettings(
                 host="127.0.0.1", port=16379, db=0,
-                username=None, password=None,
                 hash_key=hash_key, station_id=station_id,
             ),
             client=redis_client,

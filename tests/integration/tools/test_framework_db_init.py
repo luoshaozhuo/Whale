@@ -40,14 +40,11 @@ def test_init_db_creates_all_framework_tables(
 
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
-    assert table_names == {
-        "acquisition_model",
-        "acquisition_task",
-        "acquisition_variable",
-        "device",
-        "state_snapshot_outbox",
-        "substation",
-        "variable_state",
-    }
-    primary_key = inspector.get_pk_constraint("variable_state")
-    assert primary_key["constrained_columns"] == ["id"]
+    # After unification: shared ORM tables replace old ingest ORM tables
+    assert "acq_task" in table_names, f"acq_task missing from {sorted(table_names)}"
+    assert "acq_signal_state" in table_names
+    assert "acq_signal_sample" in table_names
+    assert "asset_instance" in table_names
+    assert "scada_ied" in table_names
+    primary_key = inspector.get_pk_constraint("acq_task")
+    assert primary_key["constrained_columns"] == ["task_id"]

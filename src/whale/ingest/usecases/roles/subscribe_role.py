@@ -93,7 +93,7 @@ class SubscribeRole:
             SourceStateData(
                 runtime_config_id=runtime_config.runtime_config_id,
                 acquisition_status=AcquisitionStatus.SUCCEEDED,
-                model_id=config.model_id,
+                model_id=config.ld_id,
                 acquired_states=acquired_states,
             ),
             runtime_config.acquisition_mode,
@@ -108,13 +108,21 @@ class SubscribeRole:
         stop_requested: Callable[[], bool],
         state_received: SubscriptionStateHandler,
     ) -> SourceSubscriptionRequest:
-        """Build one subscription request from source config data."""
+        """Build one subscription request with pre-resolved endpoint and node IDs."""
+        ns_uri = config.connection.params.get("namespace_uri", "")
         return SourceSubscriptionRequest(
             source_id=runtime_config.source_id,
             connection=config.connection,
             items=list(config.items),
             stop_requested=stop_requested,
             state_received=state_received,
+            resolved_endpoint=config.connection.endpoint,
+            resolved_node_ids=[
+                f"nsu={ns_uri};s={item.locator}"
+                if ns_uri and not item.locator.startswith(("ns=", "nsu="))
+                else item.locator
+                for item in config.items
+            ],
         )
 
     @staticmethod
@@ -122,11 +130,19 @@ class SubscribeRole:
         runtime_config: SourceRuntimeConfigData,
         config: SourceAcquisitionDefinition,
     ) -> SourceAcquisitionRequest:
-        """Build one initial read request for subscription startup."""
+        """Build one initial read request with pre-resolved endpoint and node IDs."""
+        ns_uri = config.connection.params.get("namespace_uri", "")
         return SourceAcquisitionRequest(
             source_id=runtime_config.source_id,
             connection=config.connection,
             items=list(config.items),
+            resolved_endpoint=config.connection.endpoint,
+            resolved_node_ids=[
+                f"nsu={ns_uri};s={item.locator}"
+                if ns_uri and not item.locator.startswith(("ns=", "nsu="))
+                else item.locator
+                for item in config.items
+            ],
         )
 
     def _build_state_received_handler(
@@ -142,7 +158,7 @@ class SubscribeRole:
                 SourceStateData(
                     runtime_config_id=runtime_config.runtime_config_id,
                     acquisition_status=AcquisitionStatus.SUCCEEDED,
-                    model_id=config.model_id,
+                    model_id=config.ld_id,
                     acquired_states=acquired_states,
                 ),
                 runtime_config.acquisition_mode,

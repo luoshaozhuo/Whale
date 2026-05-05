@@ -18,7 +18,11 @@
       "Bash(python -m pytest tests/stress/test_opcua_sim_stress.py -v --timeout=900 -s)",
       "Bash(STRESS_DURATION_S=30 python tests/stress/test_pipeline_from_db_stress.py)",
       "Bash(awk '{print $NF}')",
-      "Bash(xargs -r kill)"
+      "Bash(xargs -r kill)",
+      "Bash(rm /home/luosh/Whale/src/whale/ingest/framework/persistence/orm/acquisition_task_orm.py)",
+      "Bash(rm /home/luosh/Whale/src/whale/ingest/framework/persistence/orm/acquisition_model_orm.py)",
+      "Bash(rm /home/luosh/Whale/src/whale/ingest/framework/persistence/orm/acquisition_variable_orm.py)",
+      "Bash(rm /home/luosh/Whale/src/whale/ingest/framework/persistence/orm/variable_state_orm.py)"
     ]
   }
 }

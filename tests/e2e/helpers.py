@@ -53,75 +53,115 @@ def seed_postgres_for_e2e(
     endpoint: str | None = None,
     acquisition_mode: str = "ONCE",
 ) -> tuple[int, int]:
-    """Seed PostgreSQL with sample acquisition data. Returns (task_id, model_pk).
+    """Update an existing acq_task row for e2e test parameters.
 
-    substation_name/model_id default to unique-per-call values to avoid cross-test
-    collisions. device_code must match the OPC UA BrowseName — keep it fixed.
+    The shared DB already has sample data with acq_task entries.
+    This function finds the matching task (by task_name = f\"task_{device_code}\")
+    and updates its acquisition_mode and endpoint for the test.
+
+    Returns (task_id, 0).  The second element is kept for backwards
+    compatibility; model_pk is no longer meaningful.
     """
-    import uuid as _uuid
+    from whale.shared.persistence.orm.acquisition import AcquisitionTask
 
-    _suffix = _uuid.uuid4().hex[:6]
-    substation_name = substation_name or f"DEMO_SUBSTATION_{_suffix}"
-    model_id = model_id or f"goldwind_gw121_opcua_{_suffix}"
-    from whale.ingest.framework.persistence.orm.acquisition_model_orm import (
-        AcquisitionModelORM,
-    )
-    from whale.ingest.framework.persistence.orm.acquisition_task_orm import (
-        AcquisitionTaskORM,
-    )
-    from whale.ingest.framework.persistence.orm.acquisition_variable_orm import (
-        AcquisitionVariableORM,
-    )
+    task_name = f"task_{device_code}"
 
-    # device_id is a plain integer since DeviceORM was removed
-    device_id = hash(device_code) % (10**9)
+    # Try the ingest session first, then fall back to shared session
+    from sqlalchemy import select as _select
 
-    model = AcquisitionModelORM(model_id=model_id, model_version=model_version)
-    pg_session.add(model)
-    pg_session.flush()
+    # Use the shared session_scope for acq_task access
+    from whale.shared.persistence.session import session_scope as _shared_scope
 
-    for key in variable_keys:
-        pg_session.add(
-            AcquisitionVariableORM(
-                model_id=int(model.id),
-                variable_key=key,
-                locator=f"s={{device_code}}.{key}",
-                locator_type="node_path",
-                display_name=key,
-                variable_params={},
+    with _shared_scope() as session:
+        task = session.execute(
+            _select(AcquisitionTask).where(AcquisitionTask.task_name == task_name)
+        ).scalar_one_or_none()
+
+        if task is None:
+            # Create a minimal task linked to existing asset/ied
+            from whale.shared.persistence.orm.asset import AssetInstance, AssetType
+            from whale.shared.persistence.orm.scada_ingest import (
+                CommunicationEndpoint, IED, LDInstance,
             )
-        )
-    pg_session.flush()
 
-    host, port = "127.0.0.1", None
-    if endpoint:
-        from urllib.parse import urlsplit
+            asset = session.execute(
+                _select(AssetInstance).where(AssetInstance.asset_code == device_code)
+            ).scalar_one_or_none()
 
-        parsed = urlsplit(endpoint)
-        host = parsed.hostname or "127.0.0.1"
-        port = parsed.port
+            if asset is None:
+                # Find wind turbine asset type
+                wt_type = session.execute(
+                    _select(AssetType).where(AssetType.asset_type_name == "风力发电机")
+                ).scalar_one_or_none()
+                if wt_type is None:
+                    raise LookupError("AssetType '风力发电机' not found")
 
-    task = AcquisitionTaskORM(
-        device_id=device_id,
-        model_id=model_id,
-        model_version=model_version,
-        protocol="opcua",
-        acquisition_mode=acquisition_mode,
-        interval_ms=100,
-        host=host,
-        port=port,
-        connection_params={
-            "security_policy": "None",
-            "security_mode": "None",
-            "namespace_uri": "urn:windfarm:2wtg",
-        },
-        enabled=True,
-    )
-    pg_session.add(task)
-    pg_session.flush()
-    pg_session.commit()
+                asset = AssetInstance(
+                    asset_code=device_code,
+                    asset_name=device_code,
+                    asset_type_id=wt_type.asset_type_id,
+                )
+                session.add(asset)
+                session.flush()
 
-    return int(task.id), int(model.id)
+            ied = session.execute(
+                _select(IED).where(IED.ied_name == "IED_WTG_OPCUA")
+            ).scalar_one_or_none()
+            if ied is None:
+                raise LookupError("IED 'IED_WTG_OPCUA' not found")
+
+            # Resolve endpoint parts
+            from urllib.parse import urlsplit
+            ep_url = endpoint or "opc.tcp://127.0.0.1:40001"
+            parsed = urlsplit(ep_url)
+            ep_host = parsed.hostname or "127.0.0.1"
+            ep_port = parsed.port or 4840
+
+            comm_ep = CommunicationEndpoint(
+                ied_id=ied.ied_id,
+                access_point_name="AP_E2E",
+                application_protocol="OPC_UA",
+                transport="TCP",
+                host=ep_host,
+                port=ep_port,
+                namespace_uri="urn:windfarm:2wtg",
+                security_policy="None",
+                security_mode="None",
+            )
+            session.add(comm_ep)
+            session.flush()
+
+            ld = LDInstance(
+                endpoint_id=comm_ep.endpoint_id,
+                asset_instance_id=asset.asset_instance_id,
+                ld_inst=device_code,
+                path_prefix=device_code,
+            )
+            session.add(ld)
+            session.flush()
+
+            task = AcquisitionTask(
+                task_name=task_name,
+                ld_instance_id=ld.ld_instance_id,
+                acquisition_mode=acquisition_mode,
+                enabled=True,
+            )
+            session.add(task)
+        else:
+            task.acquisition_mode = acquisition_mode
+            if endpoint is not None:
+                # Update the CommunicationEndpoint through LDInstance chain
+                ld = session.get(LDInstance, task.ld_instance_id)
+                if ld is not None:
+                    from urllib.parse import urlsplit
+                    ep = session.get(CommunicationEndpoint, ld.endpoint_id)
+                    if ep is not None:
+                        parsed = urlsplit(endpoint)
+                        ep.host = parsed.hostname or "127.0.0.1"
+                        ep.port = parsed.port or 4840
+
+        session.commit()
+        return int(task.task_id), 0
 
 
 def wait_for_redis(redis_client, timeout_seconds: float = 20.0) -> None:
