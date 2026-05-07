@@ -6,7 +6,7 @@ from xml.etree import ElementTree
 
 import pytest
 
-from tools.opcua_sim.server_runtime import (
+from tools.source_simulation.opcua_sim.server_runtime import (
     DEFAULT_VARIABLE_VALUES,
     build_simulated_variable_value,
     load_server_config,

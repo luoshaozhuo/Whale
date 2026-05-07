@@ -11,8 +11,8 @@ from threading import Event
 
 import pytest
 
-from tools.opcua_sim.models import OpcUaServerConfig
-from tools.opcua_sim.server_runtime import OpcUaServerRuntime
+from tools.source_simulation.opcua_sim.models import OpcUaServerConfig
+from tools.source_simulation.opcua_sim.server_runtime import OpcUaServerRuntime
 from whale.ingest.ports.state import ModeAwareSourceStateCachePort
 from whale.ingest.adapters.source.opcua_source_acquisition_adapter import (
     OpcUaSourceAcquisitionAdapter,
@@ -32,8 +32,9 @@ from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionDa
 from whale.ingest.usecases.dtos.source_runtime_config_data import (
     SourceRuntimeConfigData,
 )
-from whale.ingest.usecases.pull_source_state_usecase import (
-    PullSourceStateUseCase,
+from whale.ingest.usecases.build_runtime_plan_usecase import RuntimePlanBuildUseCase
+from whale.ingest.usecases.execute_source_acquisition_usecase import (
+    ExecuteSourceAcquisitionUseCase,
 )
 from whale.ingest.usecases.subscribe_source_state_usecase import (
     SubscribeSourceStateUseCase,
@@ -44,6 +45,16 @@ TEST_INTERVAL_SECONDS = 0.1
 TEST_INTERVAL_MS = int(TEST_INTERVAL_SECONDS * 1000)
 MODEL_ID = "goldwind_gw121_opcua"
 VARIABLE_KEYS = ("TotW", "Spd", "WS")
+
+
+class FakeRuntimeConfigPort:
+    """Fake runtime-config port for integration tests."""
+
+    def __init__(self, configs: list[SourceRuntimeConfigData]) -> None:
+        self._configs = list(configs)
+
+    def list_enabled(self) -> list[SourceRuntimeConfigData]:
+        return list(self._configs)
 
 
 class InMemoryModeCaptureStateCache(ModeAwareSourceStateCachePort):
@@ -202,13 +213,11 @@ def _build_definition(endpoint: str) -> SourceAcquisitionDefinition:
     )
 
 
-def _build_pull_use_case(
-    definition: SourceAcquisitionDefinition,
+def _build_execute_use_case(
     state_cache_port: InMemoryModeCaptureStateCache,
-) -> PullSourceStateUseCase:
-    """Build the pull use case with the real OPC UA adapter and in-memory store."""
-    return PullSourceStateUseCase(
-        acquisition_definition_port=StaticSourceAcquisitionDefinitionPort(definition),
+) -> ExecuteSourceAcquisitionUseCase:
+    """Build the execute use case with the real OPC UA adapter and in-memory store."""
+    return ExecuteSourceAcquisitionUseCase(
         acquisition_port_registry=StaticSourceAcquisitionPortRegistry(
             {"opcua": OpcUaSourceAcquisitionAdapter()}
         ),
@@ -257,7 +266,8 @@ def _assert_series_changed(
 
 
 async def _run_polling_for_duration(
-    use_case: PullSourceStateUseCase,
+    use_case: ExecuteSourceAcquisitionUseCase,
+    plan_build: RuntimePlanBuildUseCase,
     runtime_config: SourceRuntimeConfigData,
     state_cache_port: InMemoryModeCaptureStateCache,
 ) -> list[tuple[float, tuple[float, float, float]]]:
@@ -270,7 +280,8 @@ async def _run_polling_for_duration(
         if elapsed >= TEST_DURATION_SECONDS:
             return snapshots
 
-        result = (await use_case.execute([runtime_config]))[0]
+        plans = plan_build.build_plans([runtime_config])
+        result = (await use_case.execute(plans))[0]
         assert result.status is AcquisitionStatus.SUCCEEDED
 
         snapshot = state_cache_port.latest_snapshot(runtime_config.acquisition_mode)
@@ -315,7 +326,11 @@ def test_pull_source_state_once_writes_rows_to_sqlite() -> None:
     endpoint = f"opc.tcp://127.0.0.1:{_get_free_port()}"
     definition = _build_definition(endpoint)
     runtime_config = _build_runtime_config(acquisition_mode="ONCE", interval_ms=0)
-    use_case = _build_pull_use_case(definition, store_port)
+    use_case = _build_execute_use_case(store_port)
+    plan_build = RuntimePlanBuildUseCase(
+        runtime_config_port=FakeRuntimeConfigPort([runtime_config]),
+        acquisition_definition_port=StaticSourceAcquisitionDefinitionPort(definition),
+    )
 
     with OpcUaServerRuntime(
         nodeset_path=Path("tools/opcua_sim/templates/OPCUANodeSet.xml"),
@@ -327,9 +342,10 @@ def test_pull_source_state_once_writes_rows_to_sqlite() -> None:
             update_interval_seconds=TEST_INTERVAL_SECONDS,
         ),
     ):
-        result = asyncio.run(use_case.execute([runtime_config]))[0]
+        plans = plan_build.build_plans([runtime_config])
+        result = asyncio.run(use_case.execute(plans))[0]
 
-    assert result.runtime_config_id == 101
+    assert result.task_id == 101
     assert result.status is AcquisitionStatus.SUCCEEDED
     assert result.error_message is None
     _assert_rows_written(store_port, "ONCE")
@@ -345,7 +361,11 @@ def test_pull_source_state_polling_writes_changing_rows_to_sqlite_for_ten_second
         acquisition_mode="POLLING",
         interval_ms=TEST_INTERVAL_MS,
     )
-    use_case = _build_pull_use_case(definition, store_port)
+    use_case = _build_execute_use_case(store_port)
+    plan_build = RuntimePlanBuildUseCase(
+        runtime_config_port=FakeRuntimeConfigPort([runtime_config]),
+        acquisition_definition_port=StaticSourceAcquisitionDefinitionPort(definition),
+    )
 
     with OpcUaServerRuntime(
         nodeset_path=Path("tools/opcua_sim/templates/OPCUANodeSet.xml"),
@@ -357,7 +377,7 @@ def test_pull_source_state_polling_writes_changing_rows_to_sqlite_for_ten_second
             update_interval_seconds=TEST_INTERVAL_SECONDS,
         ),
     ):
-        snapshots = asyncio.run(_run_polling_for_duration(use_case, runtime_config, store_port))
+        snapshots = asyncio.run(_run_polling_for_duration(use_case, plan_build, runtime_config, store_port))
 
     _assert_rows_written(store_port, "POLLING")
     _assert_series_changed(snapshots)

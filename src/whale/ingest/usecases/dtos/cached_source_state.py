@@ -19,3 +19,7 @@ class CachedSourceState:
     received_at: datetime | None
     updated_at: datetime | None
     station_id: str | None = None
+    ingested_at: datetime | None = None
+    freshness_timeout_ms: int | None = None
+    alive_timeout_ms: int | None = None
+    acquisition_mode: str | None = None

@@ -7,11 +7,11 @@ from datetime import datetime
 from threading import Event
 
 from whale.ingest.runtime.job_status import JobStatus
-from whale.ingest.usecases.dtos.pull_source_state_result import (
-    PullSourceStateResult,
-)
 from whale.ingest.usecases.dtos.source_runtime_config_data import (
     SourceRuntimeConfigData,
+)
+from whale.ingest.usecases.dtos.source_state_acquisition_result import (
+    SourceStateAcquisitionResult,
 )
 
 
@@ -22,8 +22,8 @@ class ScheduledSourceJob:
     aps_job_id: str
     status: JobStatus
     runtime_configs: tuple[SourceRuntimeConfigData, ...]
-    last_result: PullSourceStateResult | None = None
-    last_results: list[PullSourceStateResult] | None = None
+    last_result: SourceStateAcquisitionResult | None = None
+    last_results: list[SourceStateAcquisitionResult] | None = None
     last_run_at: datetime | None = None
     next_run_at: datetime | None = None
     stop_event: Event | None = None

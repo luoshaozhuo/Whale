@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 
 from sqlalchemy import select
@@ -12,10 +12,24 @@ from whale.ingest.framework.persistence.session import session_scope
 from whale.ingest.ports.runtime.source_runtime_config_port import (
     SourceRuntimeConfigPort,
 )
+from whale.ingest.usecases.dtos.server_runtime_config_data import (
+    ServerRuntimeConfigData,
+)
+from whale.ingest.usecases.dtos.signal_profile_item_runtime_data import (
+    SignalProfileItemRuntimeData,
+)
 from whale.ingest.usecases.dtos.source_runtime_config_data import (
     SourceRuntimeConfigData,
 )
-from whale.shared.persistence.orm import AcquisitionTask, AssetInstance, LDInstance
+from whale.shared.persistence.orm import (
+    AcquisitionTask,
+    AssetInstance,
+    CommunicationEndpoint,
+    LDInstance,
+    ScadaDataType,
+    SignalProfileItem,
+    IED,
+)
 
 
 class SourceRuntimeConfigRepository(SourceRuntimeConfigPort):
@@ -38,6 +52,114 @@ class SourceRuntimeConfigRepository(SourceRuntimeConfigPort):
                 )
             )
             return [self._to_data(session, task) for task in tasks]
+
+    def list_servers(
+        self,
+        *,
+        group_by: Sequence[str] = (),
+        first_group_only: bool = False,
+    ) -> list[ServerRuntimeConfigData]:
+        """Return server entries ordered for deterministic profile grouping."""
+        with self._session_factory() as session:
+            rows = session.execute(
+                select(
+                    CommunicationEndpoint.endpoint_id,
+                    IED.ied_name,
+                    AssetInstance.asset_code,
+                    AssetInstance.asset_name,
+                    LDInstance.ld_name,
+                    CommunicationEndpoint.application_protocol,
+                    CommunicationEndpoint.transport,
+                    CommunicationEndpoint.host,
+                    CommunicationEndpoint.port,
+                    CommunicationEndpoint.namespace_uri,
+                    LDInstance.signal_profile_id,
+                )
+                .join(IED, IED.ied_id == CommunicationEndpoint.ied_id)
+                .join(LDInstance, LDInstance.endpoint_id == CommunicationEndpoint.endpoint_id)
+                .join(AssetInstance, AssetInstance.asset_instance_id == LDInstance.asset_instance_id)
+                .where(LDInstance.signal_profile_id.is_not(None))
+                .order_by(
+                    LDInstance.signal_profile_id,
+                    CommunicationEndpoint.application_protocol,
+                    CommunicationEndpoint.endpoint_id,
+                )
+            ).all()
+            servers = [
+                ServerRuntimeConfigData(
+                    endpoint_id=row.endpoint_id,
+                    ied_name=row.ied_name,
+                    asset_code=row.asset_code,
+                    asset_name=row.asset_name,
+                    ld_name=row.ld_name,
+                    application_protocol=row.application_protocol,
+                    transport=row.transport,
+                    host=row.host,
+                    port=row.port,
+                    namespace_uri=row.namespace_uri,
+                    signal_profile_id=row.signal_profile_id,
+                )
+                for row in rows
+                if row.signal_profile_id is not None
+            ]
+            if not group_by or not servers:
+                return servers
+
+            supported_group_fields = {
+                "signal_profile_id",
+                "application_protocol",
+                "transport",
+                "asset_code",
+                "asset_name",
+                "ied_name",
+                "ld_name",
+            }
+            unsupported_fields = sorted(set(group_by) - supported_group_fields)
+            if unsupported_fields:
+                raise ValueError(
+                    f"Unsupported server group fields: {', '.join(unsupported_fields)}"
+                )
+
+            if not first_group_only:
+                return servers
+
+            first_group_key = tuple(getattr(servers[0], field) for field in group_by)
+            return [
+                server
+                for server in servers
+                if tuple(getattr(server, field) for field in group_by) == first_group_key
+            ]
+
+    def list_profile_items(
+        self,
+        signal_profile_id: int,
+    ) -> list[SignalProfileItemRuntimeData]:
+        """Return one signal profile's items ordered by profile item id."""
+        with self._session_factory() as session:
+            rows = session.execute(
+                select(
+                    SignalProfileItem.signal_profile_id,
+                    SignalProfileItem.ln_name,
+                    SignalProfileItem.do_name,
+                    SignalProfileItem.relative_path,
+                    ScadaDataType.type_name,
+                    SignalProfileItem.default_unit,
+                )
+                .join(ScadaDataType, ScadaDataType.data_type_id == SignalProfileItem.data_type_id)
+                .where(SignalProfileItem.signal_profile_id == signal_profile_id)
+                .order_by(SignalProfileItem.profile_item_id)
+            ).all()
+            return [
+                SignalProfileItemRuntimeData(
+                    signal_profile_id=row.signal_profile_id,
+                    ln_name=row.ln_name,
+                    do_name=row.do_name,
+                    relative_path=row.relative_path,
+                    data_type=row.type_name,
+                    unit=row.default_unit,
+                )
+                for row in rows
+            ]
 
     @staticmethod
     def _to_data(session: Session, task: AcquisitionTask) -> SourceRuntimeConfigData:

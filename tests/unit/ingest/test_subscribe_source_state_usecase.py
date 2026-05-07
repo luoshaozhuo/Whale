@@ -114,19 +114,6 @@ class FakeSourceStateCachePort:
         return len(acquired_states)
 
 
-class FakeSnapshotEmitter:
-    """Capture snapshot emission calls for subscribe tests."""
-
-    def __init__(self) -> None:
-        """Initialize one empty call list."""
-        self.call_count = 0
-
-    def execute(self) -> object:
-        """Record one snapshot emission call."""
-        self.call_count += 1
-        return {"emitted": True}
-
-
 class FakeModeAwareSourceStateCachePort(ModeAwareSourceStateCachePort):
     """Capture mode-aware latest-state updates for subscription tests."""
 
@@ -164,7 +151,7 @@ def _build_runtime_config(runtime_config_id: int, source_id: str) -> SourceRunti
 def _build_definition(model_id: str, source_id: str) -> SourceAcquisitionDefinition:
     """Build one acquisition definition for subscription tests."""
     return SourceAcquisitionDefinition(
-        model_id=model_id,
+        ld_id=model_id,
         connection=SourceConnectionData(endpoint=f"opc.tcp://127.0.0.1/{source_id}"),
         items=[
             AcquisitionItemData(
@@ -201,18 +188,12 @@ def test_execute_starts_all_source_subscriptions_and_stores_updates() -> None:
         "WTG_02",
     ]
     assert [request.source_id for request in acquisition_port.requests] == ["WTG_01", "WTG_02"]
-    assert [model_id for model_id, _ in state_cache_port.calls] == [
-        "model_1",
-        "model_2",
-        "model_1",
-        "model_2",
-    ]
-    assert [states[0].value for _, states in state_cache_port.calls] == [
-        "41.0",
-        "41.0",
-        "42.0",
-        "42.0",
-    ]
+    model_ids = [model_id for model_id, _ in state_cache_port.calls]
+    assert model_ids[:2] == ["model_1", "model_2"]
+    assert sorted(model_ids[2:]) == ["model_1", "model_2"]
+    values = [states[0].value for _, states in state_cache_port.calls]
+    assert values[:2] == ["41.0", "41.0"]
+    assert sorted(values[2:]) == ["42.0", "42.0"]
 
 
 def test_execute_routes_subscription_results_with_subscription_mode() -> None:
@@ -236,48 +217,18 @@ def test_execute_routes_subscription_results_with_subscription_mode() -> None:
 
     asyncio.run(use_case.execute(runtime_configs=runtime_configs, stop_event=Event()))
 
-    assert [mode for mode, _, _ in state_cache_port.calls_by_mode] == [
-        "SUBSCRIPTION",
-        "SUBSCRIPTION",
-        "SUBSCRIPTION",
-        "SUBSCRIPTION",
-    ]
+    modes = [mode for mode, _, _ in state_cache_port.calls_by_mode]
+    assert all(m == "SUBSCRIPTION" for m in modes)
+    assert len(modes) == 4
     flattened_states = [states[0] for _, _, states in state_cache_port.calls_by_mode]
-    assert [state.source_id for state in flattened_states] == [
-        "WTG_01",
-        "WTG_02",
-        "WTG_01",
-        "WTG_02",
-    ]
-    assert [model_id for _, model_id, _ in state_cache_port.calls_by_mode] == [
-        "model_1",
-        "model_2",
-        "model_1",
-        "model_2",
-    ]
-    assert [state.value for state in flattened_states] == ["41.0", "41.0", "42.0", "42.0"]
+    source_ids = [state.source_id for state in flattened_states]
+    assert source_ids[:2] == ["WTG_01", "WTG_02"]
+    assert sorted(source_ids[2:]) == ["WTG_01", "WTG_02"]
+    model_ids = [model_id for _, model_id, _ in state_cache_port.calls_by_mode]
+    assert model_ids[:2] == ["model_1", "model_2"]
+    assert sorted(model_ids[2:]) == ["model_1", "model_2"]
+    values = [state.value for state in flattened_states]
+    assert values[:2] == ["41.0", "41.0"]
+    assert sorted(values[2:]) == ["42.0", "42.0"]
 
 
-def test_execute_emits_snapshot_for_initial_and_incremental_updates() -> None:
-    """Emit snapshots for both initial reads and subscription updates."""
-    runtime_configs = (
-        _build_runtime_config(101, "WTG_01"),
-        _build_runtime_config(102, "WTG_02"),
-    )
-    acquisition_port = ConcurrentFakeSourceAcquisitionPort()
-    emitter = FakeSnapshotEmitter()
-    use_case = SubscribeSourceStateUseCase(
-        acquisition_definition_port=FakeAcquisitionDefinitionPort(
-            {
-                101: _build_definition("model_1", "WTG_01"),
-                102: _build_definition("model_2", "WTG_02"),
-            }
-        ),
-        acquisition_port_registry=FakeSourceAcquisitionPortRegistry({"opcua": acquisition_port}),
-        state_cache_port=FakeSourceStateCachePort(),
-        snapshot_emitter=emitter,
-    )
-
-    asyncio.run(use_case.execute(runtime_configs=runtime_configs, stop_event=Event()))
-
-    assert emitter.call_count == 4

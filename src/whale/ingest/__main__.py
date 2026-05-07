@@ -51,9 +51,10 @@ from whale.ingest.ports.message import MessagePublisherPort
 from whale.ingest.ports.state import SourceStateCachePort, SourceStateSnapshotReaderPort
 from whale.ingest.runtime.scheduler import SourceScheduler
 from whale.ingest.runtime.scheduler_settings import SchedulerSettings
+from whale.ingest.usecases.build_runtime_plan_usecase import RuntimePlanBuildUseCase
 from whale.ingest.usecases.emit_state_snapshot_usecase import EmitStateSnapshotUseCase
-from whale.ingest.usecases.pull_source_state_usecase import (
-    PullSourceStateUseCase,
+from whale.ingest.usecases.execute_source_acquisition_usecase import (
+    ExecuteSourceAcquisitionUseCase,
 )
 from whale.ingest.usecases.subscribe_source_state_usecase import (
     SubscribeSourceStateUseCase,
@@ -65,9 +66,15 @@ def build_scheduler() -> SourceScheduler:
     runtime_config_port = SourceRuntimeConfigRepository()
     settings = SchedulerSettings(scheduler_type="background")
 
+    plan_build_usecase = RuntimePlanBuildUseCase(
+        runtime_config_port=runtime_config_port,
+        acquisition_definition_port=OpcUaSourceAcquisitionDefinitionRepository(),
+    )
+
     return SourceScheduler(
         runtime_config_port=runtime_config_port,
-        pull_source_state_usecase_factory=lambda: _build_pull_source_state_usecase(settings),
+        plan_build_usecase=plan_build_usecase,
+        execute_source_acquisition_usecase_factory=lambda: _build_execute_usecase(settings),
         subscribe_source_state_usecase_factory=_build_subscribe_source_state_usecase,
         settings=settings,
     )
@@ -84,16 +91,14 @@ def _build_state_cache_port() -> SourceStateCachePort:
     )
 
 
-def _build_pull_source_state_usecase(settings: SchedulerSettings) -> PullSourceStateUseCase:
-    """Build one short-lived pull use case for ONCE or POLLING jobs."""
+def _build_execute_usecase(settings: SchedulerSettings) -> ExecuteSourceAcquisitionUseCase:
+    """Build one short-lived execute use case for ONCE or POLLING jobs."""
     state_cache_port = _build_state_cache_port()
-    return PullSourceStateUseCase(
-        acquisition_definition_port=OpcUaSourceAcquisitionDefinitionRepository(),
+    return ExecuteSourceAcquisitionUseCase(
         acquisition_port_registry=StaticSourceAcquisitionPortRegistry(
             {"opcua": OpcUaSourceAcquisitionAdapter()}
         ),
         state_cache_port=state_cache_port,
-        snapshot_emitter=_build_emit_state_snapshot_usecase(state_cache_port),
         max_in_flight=settings.pull_max_in_flight,
     )
 
@@ -107,7 +112,6 @@ def _build_subscribe_source_state_usecase() -> SubscribeSourceStateUseCase:
             {"opcua": OpcUaSourceAcquisitionAdapter()}
         ),
         state_cache_port=state_cache_port,
-        snapshot_emitter=_build_emit_state_snapshot_usecase(state_cache_port),
     )
 
 

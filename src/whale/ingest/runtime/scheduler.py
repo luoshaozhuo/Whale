@@ -28,18 +28,19 @@ from whale.ingest.runtime.job_status import JobStatus
 from whale.ingest.runtime.scheduler_factory import build_scheduler
 from whale.ingest.runtime.scheduler_job import ScheduledSourceJob
 from whale.ingest.runtime.scheduler_settings import SchedulerSettings
+from whale.ingest.usecases.build_runtime_plan_usecase import RuntimePlanBuildUseCase
 from whale.ingest.usecases.dtos.acquisition_status import AcquisitionStatus
 from whale.ingest.usecases.dtos.source_runtime_config_data import (
     SourceRuntimeConfigData,
 )
-from whale.ingest.usecases.pull_source_state_usecase import (
-    PullSourceStateUseCase,
+from whale.ingest.usecases.execute_source_acquisition_usecase import (
+    ExecuteSourceAcquisitionUseCase,
 )
 from whale.ingest.usecases.subscribe_source_state_usecase import (
     SubscribeSourceStateUseCase,
 )
 
-PullSourceStateUseCaseFactory = Callable[[], PullSourceStateUseCase]
+ExecuteSourceAcquisitionUseCaseFactory = Callable[[], ExecuteSourceAcquisitionUseCase]
 SubscribeSourceStateUseCaseFactory = Callable[[], SubscribeSourceStateUseCase]
 
 
@@ -49,13 +50,15 @@ class SourceScheduler:
     def __init__(
         self,
         runtime_config_port: SourceRuntimeConfigPort,
-        pull_source_state_usecase_factory: PullSourceStateUseCaseFactory,
+        plan_build_usecase: RuntimePlanBuildUseCase,
+        execute_source_acquisition_usecase_factory: ExecuteSourceAcquisitionUseCaseFactory,
         subscribe_source_state_usecase_factory: SubscribeSourceStateUseCaseFactory,
         settings: SchedulerSettings | None = None,
     ) -> None:
         """Initialize the scheduler with required dependencies."""
         self._runtime_config_port = runtime_config_port
-        self._pull_source_state_usecase_factory = pull_source_state_usecase_factory
+        self._plan_build_usecase = plan_build_usecase
+        self._execute_usecase_factory = execute_source_acquisition_usecase_factory
         self._subscribe_source_state_usecase_factory = subscribe_source_state_usecase_factory
         self._settings = settings or SchedulerSettings()
         self._scheduler: BaseScheduler = build_scheduler(self._settings)
@@ -231,7 +234,8 @@ class SourceScheduler:
         if runtime_job is not None:
             runtime_job.status = JobStatus.RUNNING
 
-        results = asyncio.run(self._pull_source_state_usecase_factory().execute([runtime_config]))
+        plans = self._plan_build_usecase.build_plans([runtime_config])
+        results = asyncio.run(self._execute_usecase_factory().execute(plans))
         if runtime_job is not None:
             runtime_job.last_result = results[0] if results else None
 
@@ -247,9 +251,8 @@ class SourceScheduler:
         if runtime_job is not None:
             runtime_job.status = JobStatus.RUNNING
 
-        results = asyncio.run(
-            self._pull_source_state_usecase_factory().execute(list(runtime_configs))
-        )
+        plans = self._plan_build_usecase.build_plans(list(runtime_configs))
+        results = asyncio.run(self._execute_usecase_factory().execute(plans))
         if runtime_job is not None:
             runtime_job.last_results = results
             runtime_job.last_result = next(

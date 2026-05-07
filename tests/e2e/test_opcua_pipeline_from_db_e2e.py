@@ -73,7 +73,7 @@ def test_e2e_db_driven_pipeline_reads_wtg_and_publishes_to_kafka(
     except Exception:
         pass
 
-    from tools.opcua_sim.fleet_runtime import OpcUaFleetRuntime
+    from tools.source_simulation.opcua_sim.fleet_runtime import OpcUaFleetRuntime
     fleet = OpcUaFleetRuntime.from_database()
     runtime = fleet._runtimes[0]
     runtime.start()
@@ -89,8 +89,8 @@ def test_e2e_db_driven_pipeline_reads_wtg_and_publishes_to_kafka(
         RedisSourceStateCache, RedisSourceStateCacheSettings
     from whale.ingest.usecases.emit_state_snapshot_usecase import \
         EmitStateSnapshotUseCase
-    from whale.ingest.usecases.pull_source_state_usecase import \
-        PullSourceStateUseCase
+    from whale.ingest.usecases.execute_source_acquisition_usecase import \
+        ExecuteSourceAcquisitionUseCase
     from whale.ingest.adapters.config.source_runtime_config_repository import \
         SourceRuntimeConfigRepository
     from whale.ingest.adapters.config.opcua_source_acquisition_definition_repository import \
@@ -127,17 +127,17 @@ def test_e2e_db_driven_pipeline_reads_wtg_and_publishes_to_kafka(
             {"opcua": OpcUaSourceAcquisitionAdapter(),
              "OPC_UA": OpcUaSourceAcquisitionAdapter()}
         )
-        pull_uc = PullSourceStateUseCase(
-            acquisition_definition_port=def_repo,
+        pull_uc = ExecuteSourceAcquisitionUseCase(
             acquisition_port_registry=registry,
             state_cache_port=state_cache,
-            snapshot_emitter=emit_uc,
         )
 
         async def _pull():
             return await pull_uc.execute(config_repo.list_enabled())
         results = asyncio.run(_pull())
         assert isinstance(results, list) and len(results) > 0, f"Pull failed: {results}"
+
+        emit_result = emit_uc.execute()
 
         cached = redis_client.hgetall(hash_key)
         print(f"Redis: {len(cached)} entries")

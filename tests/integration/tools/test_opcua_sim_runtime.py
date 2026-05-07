@@ -13,8 +13,8 @@ import yaml
 from asyncua import ua  # type: ignore[import-untyped]
 from asyncua.sync import Client  # type: ignore[import-untyped]
 
-from tools.opcua_sim.fleet_runtime import OpcUaFleetRuntime
-from tools.opcua_sim.server_runtime import OpcUaServerRuntime
+from tools.source_simulation.opcua_sim.fleet_runtime import OpcUaFleetRuntime
+from tools.source_simulation.opcua_sim.server_runtime import OpcUaServerRuntime
 
 CLI_BROWSE_NODE = "ns=2;s=WindFarm"
 CLI_STARTUP_TIMEOUT_SECONDS = 10.0

@@ -6,19 +6,18 @@ import os
 import socket
 import sys
 from pathlib import Path
-from typing import Generator, cast
+from typing import Any, Generator, cast
 
 import pytest
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = PROJECT_ROOT / "src"
-OPCUA_SIM_TEMPLATE_DIR = PROJECT_ROOT / "tools" / "opcua_sim" / "templates"
+OPCUA_SIM_TEMPLATE_DIR = (
+    PROJECT_ROOT / "tools" / "source_simulation" / "adapters" / "opcua" / "templates"
+)
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
-
-from tools.opcua_sim.fleet_runtime import OpcUaFleetRuntime  # noqa: E402
-from tools.opcua_sim.server_runtime import OpcUaServerRuntime, load_server_config  # noqa: E402
 
 _VALID_STATE_CACHE_BACKENDS = frozenset({"relational", "redis"})
 _VALID_MESSAGE_BACKENDS = frozenset({"relational_outbox", "redis_streams", "kafka"})
@@ -115,7 +114,7 @@ def local_opcua_connections_path(
 def opcua_server_runtime(
     sample_nodeset_path: str,
     local_opcua_connections_path: str,
-) -> Generator[OpcUaServerRuntime, None, None]:
+) -> Generator[Any, None, None]:
     """Start a single simulator server for integration tests.
 
     Args:
@@ -125,6 +124,8 @@ def opcua_server_runtime(
     Yields:
         Running single-server runtime using the first connection entry.
     """
+    from tools.opcua_sim.server_runtime import OpcUaServerRuntime, load_server_config
+
     runtime = OpcUaServerRuntime(
         nodeset_path=sample_nodeset_path,
         config=load_server_config(local_opcua_connections_path, "WTG_01"),
@@ -137,7 +138,7 @@ def opcua_server_runtime(
 def opcua_sim_fleet(
     sample_nodeset_path: str,
     local_opcua_connections_path: str,
-) -> Generator[OpcUaFleetRuntime, None, None]:
+) -> Generator[Any, None, None]:
     """Start all simulator servers described by the localhost test YAML.
 
     Args:
@@ -147,6 +148,8 @@ def opcua_sim_fleet(
     Yields:
         Running fleet runtime for both wind turbine servers.
     """
+    from tools.opcua_sim.fleet_runtime import OpcUaFleetRuntime
+
     fleet = OpcUaFleetRuntime.from_connection_config(
         nodeset_path=sample_nodeset_path,
         config_path=local_opcua_connections_path,

@@ -40,11 +40,38 @@ def test_init_db_creates_all_framework_tables(
 
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
+    view_names = set(inspector.get_view_names())
     # After unification: shared ORM tables replace old ingest ORM tables
     assert "acq_task" in table_names, f"acq_task missing from {sorted(table_names)}"
     assert "acq_signal_state" in table_names
     assert "acq_signal_sample" in table_names
     assert "asset_instance" in table_names
     assert "scada_ied" in table_names
+    assert "scada_ld_signal_override" not in table_names
+    assert "v_scada_server" in view_names
     primary_key = inspector.get_pk_constraint("acq_task")
     assert primary_key["constrained_columns"] == ["task_id"]
+
+    server_view_columns = [column["name"] for column in inspector.get_columns("v_scada_server")]
+    assert server_view_columns == [
+        "endpoint_id",
+        "ied_id",
+        "ld_instance_id",
+        "ied_name",
+        "asset_code",
+        "asset_name",
+        "access_point_name",
+        "application_protocol",
+        "transport",
+        "host",
+        "port",
+        "namespace_uri",
+        "security_policy",
+        "security_mode",
+        "auth_type",
+        "credential_ref",
+        "asset_instance_id",
+        "signal_profile_id",
+        "ld_name",
+        "path_prefix",
+    ]

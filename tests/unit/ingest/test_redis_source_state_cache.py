@@ -13,6 +13,22 @@ from whale.ingest.adapters.state.redis_source_state_cache import (
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
 
 
+class FakeRedisPipeline:
+    """Simple in-memory Redis pipeline fake used by unit tests."""
+
+    def __init__(self, client: FakeRedisHashClient) -> None:
+        self._client = client
+        self._commands: list[tuple[str, str, str]] = []
+
+    def hset(self, name: str, key: str, value: str) -> None:
+        self._commands.append((name, key, value))
+
+    def execute(self) -> None:
+        for name, key, value in self._commands:
+            self._client.hset(name, key, value)
+        self._commands.clear()
+
+
 class FakeRedisHashClient:
     """Simple in-memory Redis hash fake used by unit tests."""
 
@@ -30,6 +46,10 @@ class FakeRedisHashClient:
     def hgetall(self, name: str) -> dict[str, str]:
         """Return all fields from one hash."""
         return dict(self.hashes.get(name, {}))
+
+    def pipeline(self) -> FakeRedisPipeline:
+        """Return a pipeline that batches hset commands."""
+        return FakeRedisPipeline(self)
 
 
 def _build_settings() -> RedisSourceStateCacheSettings:

@@ -171,7 +171,6 @@ class LDInstance(Base):
 
     endpoint: Mapped["CommunicationEndpoint"] = relationship(back_populates="ld_instances")
     signal_profile: Mapped[Optional["SignalProfile"]] = relationship(back_populates="ld_instances")
-    signal_overrides: Mapped[list["LDSignalOverride"]] = relationship(back_populates="ld_instance")
 
 
 class SignalProfile(Base):
@@ -285,49 +284,7 @@ class SignalProfileItem(Base):
     description: Mapped[Optional[str]] = mapped_column(String(512), nullable=True, comment="点位说明")
 
     signal_profile: Mapped["SignalProfile"] = relationship(back_populates="items")
-    overrides: Mapped[list["LDSignalOverride"]] = relationship(back_populates="profile_item")
     data_type: Mapped["ScadaDataType"] = relationship()
-
-
-class LDSignalOverride(Base):
-    """LD 点位覆盖 — 个别 LD 与共享 profile 不一致时的差异配置.
-
-    只有当某个 LDInstance 的某些点位与共享 profile 不一致时才写入.
-    不是每个 LD 每个点位都插入一条.
-    """
-
-    __tablename__ = "scada_ld_signal_override"
-    __table_args__ = (
-        UniqueConstraint("ld_instance_id", "profile_item_id", name="uq_ld_override"),
-        {"comment": "LD 点位覆盖配置"},
-    )
-
-    override_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="覆盖配置主键")
-    ld_instance_id: Mapped[int] = mapped_column(
-        ForeignKey("scada_ld_instance.ld_instance_id"), nullable=False, index=True, comment="所属 LD 实例"
-    )
-    profile_item_id: Mapped[int] = mapped_column(
-        ForeignKey("scada_signal_profile_item.profile_item_id"), nullable=False, comment="被覆盖的点位方案条目"
-    )
-    enabled_override: Mapped[Optional[bool]] = mapped_column(
-        Boolean, nullable=True, comment="是否启用覆盖，false 表示该 LD 禁用此点位"
-    )
-    relative_path_override: Mapped[Optional[str]] = mapped_column(
-        String(512), nullable=True, comment="相对路径覆盖"
-    )
-    protocol_node_id_override: Mapped[Optional[str]] = mapped_column(
-        String(512), nullable=True, comment="协议节点 ID 覆盖，如 OPC UA: ns=2;s=WTG_001/MMXU1/TotW"
-    )
-    sample_mode_override: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, comment="采样模式覆盖")
-    sample_interval_ms_override: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="采样周期覆盖")
-    unit_override: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="单位覆盖")
-    scale_override: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="倍率覆盖")
-    offset_override: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="偏移覆盖")
-    deadband_override: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="死区覆盖")
-    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, comment="扩展覆盖配置")
-
-    ld_instance: Mapped["LDInstance"] = relationship(back_populates="signal_overrides")
-    profile_item: Mapped["SignalProfileItem"] = relationship(back_populates="overrides")
 
 
 class ScadaDataType(Base):

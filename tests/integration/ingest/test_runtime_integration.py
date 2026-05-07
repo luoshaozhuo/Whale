@@ -17,7 +17,7 @@ import yaml
 from sqlalchemy import create_engine
 
 import whale.ingest.framework.persistence.orm as ingest_orm
-from tools.opcua_sim.server_runtime import OpcUaServerRuntime, load_server_config
+from tools.source_simulation.opcua_sim.server_runtime import OpcUaServerRuntime, load_server_config
 from whale.ingest.framework.persistence.base import Base
 
 

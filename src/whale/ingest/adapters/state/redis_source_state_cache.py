@@ -136,6 +136,7 @@ class RedisSourceStateCache(SourceStateCachePort, SourceStateSnapshotReaderPort)
                     "source_observed_at": state.observed_at.isoformat(),
                     "received_at": received_at.isoformat(),
                     "updated_at": received_at.isoformat(),
+                    "ingested_at": received_at.isoformat(),
                 }
             )
             pipe.hset(self._settings.hash_key, field, payload)
@@ -163,6 +164,10 @@ class RedisSourceStateCache(SourceStateCachePort, SourceStateSnapshotReaderPort)
                     source_observed_at=self._parse_datetime(payload.get("source_observed_at")),
                     received_at=self._parse_datetime(payload.get("received_at")),
                     updated_at=self._parse_datetime(payload.get("updated_at")),
+                    ingested_at=self._parse_datetime(payload.get("ingested_at")),
+                    freshness_timeout_ms=payload.get("freshness_timeout_ms"),
+                    alive_timeout_ms=payload.get("alive_timeout_ms"),
+                    acquisition_mode=payload.get("acquisition_mode"),
                 )
             )
 

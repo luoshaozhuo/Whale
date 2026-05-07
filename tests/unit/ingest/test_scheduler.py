@@ -1,6 +1,7 @@
 """Unit tests for the ingest runtime scheduler."""
 
 from __future__ import annotations
+
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import cast
@@ -8,15 +9,20 @@ from typing import cast
 from whale.ingest.runtime.job_status import JobStatus
 from whale.ingest.runtime.scheduler import SourceScheduler
 from whale.ingest.runtime.scheduler_settings import SchedulerSettings
+from whale.ingest.usecases.build_runtime_plan_usecase import RuntimePlanBuildUseCase
 from whale.ingest.usecases.dtos.acquisition_status import AcquisitionStatus
-from whale.ingest.usecases.dtos.pull_source_state_result import (
-    PullSourceStateResult,
+from whale.ingest.usecases.dtos.source_acquisition_execution_plan import (
+    SourceAcquisitionExecutionPlan,
 )
+from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionData
 from whale.ingest.usecases.dtos.source_runtime_config_data import (
     SourceRuntimeConfigData,
 )
-from whale.ingest.usecases.pull_source_state_usecase import (
-    PullSourceStateUseCase,
+from whale.ingest.usecases.dtos.source_state_acquisition_result import (
+    SourceStateAcquisitionResult,
+)
+from whale.ingest.usecases.execute_source_acquisition_usecase import (
+    ExecuteSourceAcquisitionUseCase,
 )
 from whale.ingest.usecases.subscribe_source_state_usecase import (
     SubscribeSourceStateUseCase,
@@ -27,40 +33,66 @@ class FakeRuntimeConfigPort:
     """Fake runtime-config port that returns one fixed config list."""
 
     def __init__(self, configs: list[SourceRuntimeConfigData]) -> None:
-        """Store the configs exposed to the scheduler."""
         self._configs = list(configs)
 
     def list_enabled(self) -> list[SourceRuntimeConfigData]:
-        """Return the configured runtime configs."""
         return list(self._configs)
 
 
-class FakePullSourceStateUseCase:
-    """Fake use case that captures scheduler dispatch calls."""
+class FakePlanBuildUseCase:
+    """Fake plan-build use case that captures configs and returns simple plans."""
+
+    def __init__(self) -> None:
+        self.captured_configs: list[list[SourceRuntimeConfigData]] = []
+
+    def build_plans(self, configs: list[SourceRuntimeConfigData]) -> list[SourceAcquisitionExecutionPlan]:
+        self.captured_configs.append(list(configs))
+        return [
+            SourceAcquisitionExecutionPlan(
+                plan_id=f"plan-{cfg.runtime_config_id}",
+                task_id=cfg.runtime_config_id,
+                ld_instance_id=0,
+                acquisition_mode=cfg.acquisition_mode,
+                protocol=cfg.protocol,
+                endpoint_config=SourceConnectionData(endpoint="opc.tcp://127.0.0.1:4840"),
+                request_items=[],
+                request_timeout_ms=500,
+                freshness_timeout_ms=30000,
+                alive_timeout_ms=60000,
+            )
+            for cfg in configs
+        ]
+
+    def build_plans_from_enabled(self) -> list[SourceAcquisitionExecutionPlan]:
+        return []
+
+
+class FakeExecuteSourceAcquisitionUseCase:
+    """Fake use case that captures plan dispatch calls."""
 
     def __init__(
         self,
         status: AcquisitionStatus = AcquisitionStatus.SUCCEEDED,
     ) -> None:
-        """Initialize one empty command capture list."""
         self._status = status
-        self.runtime_config_batches: list[list[SourceRuntimeConfigData]] = []
+        self.plan_batches: list[list[SourceAcquisitionExecutionPlan]] = []
 
     async def execute(
         self,
-        runtime_configs: list[SourceRuntimeConfigData],
-    ) -> list[PullSourceStateResult]:
-        """Capture one merged short-task batch."""
-        self.runtime_config_batches.append(runtime_configs)
+        plans: list[SourceAcquisitionExecutionPlan],
+    ) -> list[SourceStateAcquisitionResult]:
+        self.plan_batches.append(list(plans))
         return [
-            PullSourceStateResult(
-                runtime_config_id=runtime_config.runtime_config_id,
+            SourceStateAcquisitionResult(
+                plan_id=plan.plan_id,
+                task_id=plan.task_id,
+                ld_instance_id=plan.ld_instance_id,
                 status=self._status,
                 started_at=(now := datetime.now(tz=UTC)),
                 ended_at=now,
                 error_message=None if self._status is not AcquisitionStatus.FAILED else "boom",
             )
-            for runtime_config in runtime_configs
+            for plan in plans
         ]
 
 
@@ -68,7 +100,6 @@ class FakeSubscribeSourceStateUseCase:
     """Fake subscription use case that captures merged subscription calls."""
 
     def __init__(self) -> None:
-        """Initialize subscription call capture."""
         self.calls: list[tuple[tuple[SourceRuntimeConfigData, ...], object]] = []
 
     async def execute(
@@ -76,7 +107,6 @@ class FakeSubscribeSourceStateUseCase:
         runtime_configs: tuple[SourceRuntimeConfigData, ...],
         stop_event: object,
     ) -> None:
-        """Capture subscription runtime configs and stop signal."""
         self.calls.append((runtime_configs, stop_event))
 
 
@@ -87,7 +117,6 @@ def _build_runtime_config(
     acquisition_mode: str = "ONCE",
     interval_ms: int = 0,
 ) -> SourceRuntimeConfigData:
-    """Build one minimal runtime config for scheduler tests."""
     return SourceRuntimeConfigData(
         runtime_config_id=runtime_config_id,
         source_id="WTG_01",
@@ -98,8 +127,26 @@ def _build_runtime_config(
     )
 
 
+def _build_scheduler(
+    runtime_configs: list[SourceRuntimeConfigData],
+    *,
+    use_case: FakeExecuteSourceAcquisitionUseCase | None = None,
+    sub_use_case: FakeSubscribeSourceStateUseCase | None = None,
+    plan_build: FakePlanBuildUseCase | None = None,
+) -> SourceScheduler:
+    uc = use_case or FakeExecuteSourceAcquisitionUseCase()
+    sub = sub_use_case or FakeSubscribeSourceStateUseCase()
+    pb = plan_build or FakePlanBuildUseCase()
+    return SourceScheduler(
+        runtime_config_port=FakeRuntimeConfigPort(runtime_configs),
+        plan_build_usecase=cast(RuntimePlanBuildUseCase, pb),
+        execute_source_acquisition_usecase_factory=lambda: cast(ExecuteSourceAcquisitionUseCase, uc),
+        subscribe_source_state_usecase_factory=lambda: cast(SubscribeSourceStateUseCase, sub),
+        settings=SchedulerSettings(scheduler_type="background"),
+    )
+
+
 def _get_start_callable(scheduler: SourceScheduler) -> Callable[[SourceRuntimeConfigData], None]:
-    """Return the APScheduler job callable after registration."""
     jobs = scheduler._scheduler.get_jobs()  # noqa: SLF001
     assert len(jobs) == 1
     return cast(Callable[[SourceRuntimeConfigData], None], jobs[0].func)
@@ -108,18 +155,7 @@ def _get_start_callable(scheduler: SourceScheduler) -> Callable[[SourceRuntimeCo
 def test_reload_registers_runtime_job_with_runtime_config() -> None:
     """Keep the runtime config in runtime job state."""
     runtime_config = _build_runtime_config(101)
-    scheduler = SourceScheduler(
-        runtime_config_port=FakeRuntimeConfigPort([runtime_config]),
-        pull_source_state_usecase_factory=lambda: cast(
-            PullSourceStateUseCase,
-            FakePullSourceStateUseCase(),
-        ),
-        subscribe_source_state_usecase_factory=lambda: cast(
-            SubscribeSourceStateUseCase,
-            FakeSubscribeSourceStateUseCase(),
-        ),
-        settings=SchedulerSettings(scheduler_type="background"),
-    )
+    scheduler = _build_scheduler([runtime_config])
 
     scheduler.reload()
 
@@ -130,19 +166,12 @@ def test_reload_registers_runtime_job_with_runtime_config() -> None:
     assert runtime_jobs[0].status is JobStatus.SCHEDULED
 
 
-def test_run_once_job_passes_runtime_config_snapshot_to_use_case() -> None:
-    """Dispatch the runtime-config snapshot to the use case."""
+def test_run_once_job_passes_plans_to_use_case() -> None:
+    """Build plans from runtime config and dispatch to execute use case."""
     runtime_config = _build_runtime_config(101)
-    use_case = FakePullSourceStateUseCase()
-    scheduler = SourceScheduler(
-        runtime_config_port=FakeRuntimeConfigPort([runtime_config]),
-        pull_source_state_usecase_factory=lambda: cast(PullSourceStateUseCase, use_case),
-        subscribe_source_state_usecase_factory=lambda: cast(
-            SubscribeSourceStateUseCase,
-            FakeSubscribeSourceStateUseCase(),
-        ),
-        settings=SchedulerSettings(scheduler_type="background"),
-    )
+    pb = FakePlanBuildUseCase()
+    use_case = FakeExecuteSourceAcquisitionUseCase()
+    scheduler = _build_scheduler([runtime_config], use_case=use_case, plan_build=pb)
     scheduler.reload()
 
     job_func = _get_start_callable(scheduler)
@@ -155,25 +184,15 @@ def test_run_once_job_passes_runtime_config_snapshot_to_use_case() -> None:
     )  # noqa: SLF001
 
     assert runtime_job.status is JobStatus.RUNNING
-    assert use_case.runtime_config_batches == [[runtime_config]]
+    assert pb.captured_configs == [[runtime_config]]
+    assert len(use_case.plan_batches) == 1
 
 
 def test_run_once_job_marks_failed_result_as_failed_job() -> None:
     """Treat business FAILED results as failed scheduler jobs."""
     runtime_config = _build_runtime_config(101)
-    use_case = FakePullSourceStateUseCase(status=AcquisitionStatus.FAILED)
-    scheduler = SourceScheduler(
-        runtime_config_port=FakeRuntimeConfigPort([runtime_config]),
-        pull_source_state_usecase_factory=lambda: cast(
-            PullSourceStateUseCase,
-            use_case,
-        ),
-        subscribe_source_state_usecase_factory=lambda: cast(
-            SubscribeSourceStateUseCase,
-            FakeSubscribeSourceStateUseCase(),
-        ),
-        settings=SchedulerSettings(scheduler_type="background"),
-    )
+    use_case = FakeExecuteSourceAcquisitionUseCase(status=AcquisitionStatus.FAILED)
+    scheduler = _build_scheduler([runtime_config], use_case=use_case)
     scheduler.reload()
 
     _get_start_callable(scheduler)(runtime_config)
@@ -190,19 +209,8 @@ def test_run_once_job_marks_failed_result_as_failed_job() -> None:
 def test_run_once_job_keeps_empty_result_non_failed() -> None:
     """Treat EMPTY as one non-failing business outcome."""
     runtime_config = _build_runtime_config(101)
-    use_case = FakePullSourceStateUseCase(status=AcquisitionStatus.EMPTY)
-    scheduler = SourceScheduler(
-        runtime_config_port=FakeRuntimeConfigPort([runtime_config]),
-        pull_source_state_usecase_factory=lambda: cast(
-            PullSourceStateUseCase,
-            use_case,
-        ),
-        subscribe_source_state_usecase_factory=lambda: cast(
-            SubscribeSourceStateUseCase,
-            FakeSubscribeSourceStateUseCase(),
-        ),
-        settings=SchedulerSettings(scheduler_type="background"),
-    )
+    use_case = FakeExecuteSourceAcquisitionUseCase(status=AcquisitionStatus.EMPTY)
+    scheduler = _build_scheduler([runtime_config], use_case=use_case)
     scheduler.reload()
 
     _get_start_callable(scheduler)(runtime_config)
@@ -220,19 +228,8 @@ def test_run_once_job_keeps_empty_result_non_failed() -> None:
 def test_run_once_job_keeps_disabled_result_non_failed() -> None:
     """Treat DISABLED as one non-failing business outcome."""
     runtime_config = _build_runtime_config(101)
-    use_case = FakePullSourceStateUseCase(status=AcquisitionStatus.DISABLED)
-    scheduler = SourceScheduler(
-        runtime_config_port=FakeRuntimeConfigPort([runtime_config]),
-        pull_source_state_usecase_factory=lambda: cast(
-            PullSourceStateUseCase,
-            use_case,
-        ),
-        subscribe_source_state_usecase_factory=lambda: cast(
-            SubscribeSourceStateUseCase,
-            FakeSubscribeSourceStateUseCase(),
-        ),
-        settings=SchedulerSettings(scheduler_type="background"),
-    )
+    use_case = FakeExecuteSourceAcquisitionUseCase(status=AcquisitionStatus.DISABLED)
+    scheduler = _build_scheduler([runtime_config], use_case=use_case)
     scheduler.reload()
 
     _get_start_callable(scheduler)(runtime_config)
@@ -251,18 +248,7 @@ def test_reload_merges_polling_jobs_by_interval() -> None:
     """Register one APScheduler polling job per shared interval."""
     first = _build_runtime_config(101, acquisition_mode="POLLING", interval_ms=1000)
     second = _build_runtime_config(102, acquisition_mode="POLLING", interval_ms=1000)
-    scheduler = SourceScheduler(
-        runtime_config_port=FakeRuntimeConfigPort([first, second]),
-        pull_source_state_usecase_factory=lambda: cast(
-            PullSourceStateUseCase,
-            FakePullSourceStateUseCase(),
-        ),
-        subscribe_source_state_usecase_factory=lambda: cast(
-            SubscribeSourceStateUseCase,
-            FakeSubscribeSourceStateUseCase(),
-        ),
-        settings=SchedulerSettings(scheduler_type="background"),
-    )
+    scheduler = _build_scheduler([first, second])
 
     scheduler.reload()
 
@@ -281,18 +267,7 @@ def test_reload_splits_polling_jobs_by_protocol() -> None:
         acquisition_mode="POLLING",
         interval_ms=1000,
     )
-    scheduler = SourceScheduler(
-        runtime_config_port=FakeRuntimeConfigPort([opcua_config, modbus_config]),
-        pull_source_state_usecase_factory=lambda: cast(
-            PullSourceStateUseCase,
-            FakePullSourceStateUseCase(),
-        ),
-        subscribe_source_state_usecase_factory=lambda: cast(
-            SubscribeSourceStateUseCase,
-            FakeSubscribeSourceStateUseCase(),
-        ),
-        settings=SchedulerSettings(scheduler_type="background"),
-    )
+    scheduler = _build_scheduler([opcua_config, modbus_config])
 
     scheduler.reload()
 
@@ -303,19 +278,12 @@ def test_reload_splits_polling_jobs_by_protocol() -> None:
 
 
 def test_polling_job_executes_merged_batch_with_one_use_case() -> None:
-    """Dispatch same-interval polling configs as one short batch."""
+    """Dispatch same-interval polling configs as one plan batch."""
     first = _build_runtime_config(101, acquisition_mode="POLLING", interval_ms=1000)
     second = _build_runtime_config(102, acquisition_mode="POLLING", interval_ms=1000)
-    use_case = FakePullSourceStateUseCase()
-    scheduler = SourceScheduler(
-        runtime_config_port=FakeRuntimeConfigPort([first, second]),
-        pull_source_state_usecase_factory=lambda: cast(PullSourceStateUseCase, use_case),
-        subscribe_source_state_usecase_factory=lambda: cast(
-            SubscribeSourceStateUseCase,
-            FakeSubscribeSourceStateUseCase(),
-        ),
-        settings=SchedulerSettings(scheduler_type="background"),
-    )
+    pb = FakePlanBuildUseCase()
+    use_case = FakeExecuteSourceAcquisitionUseCase()
+    scheduler = _build_scheduler([first, second], use_case=use_case, plan_build=pb)
     scheduler.reload()
 
     job = scheduler._scheduler.get_jobs()[0]  # noqa: SLF001
@@ -323,26 +291,16 @@ def test_polling_job_executes_merged_batch_with_one_use_case() -> None:
         cast(tuple[SourceRuntimeConfigData, ...], job.args[0])
     )
 
-    assert use_case.runtime_config_batches == [[first, second]]
+    assert pb.captured_configs == [[first, second]]
+    assert len(use_case.plan_batches) == 1
 
 
 def test_subscription_job_sets_stop_event_on_stop() -> None:
     """Start subscription as one merged long-running job with a stop signal."""
     first = _build_runtime_config(101, acquisition_mode="SUBSCRIPTION")
     second = _build_runtime_config(102, acquisition_mode="SUBSCRIPTION")
-    use_case = FakeSubscribeSourceStateUseCase()
-    scheduler = SourceScheduler(
-        runtime_config_port=FakeRuntimeConfigPort([first, second]),
-        pull_source_state_usecase_factory=lambda: cast(
-            PullSourceStateUseCase,
-            FakePullSourceStateUseCase(),
-        ),
-        subscribe_source_state_usecase_factory=lambda: cast(
-            SubscribeSourceStateUseCase,
-            use_case,
-        ),
-        settings=SchedulerSettings(scheduler_type="background"),
-    )
+    sub_use_case = FakeSubscribeSourceStateUseCase()
+    scheduler = _build_scheduler([first, second], sub_use_case=sub_use_case)
     scheduler.reload()
 
     job = scheduler._scheduler.get_jobs()[0]  # noqa: SLF001
@@ -352,8 +310,8 @@ def test_subscription_job_sets_stop_event_on_stop() -> None:
     )
     scheduler.stop(wait=False)
 
-    assert use_case.calls[0][0] == (first, second)
-    assert getattr(use_case.calls[0][1], "is_set")()
+    assert sub_use_case.calls[0][0] == (first, second)
+    assert getattr(sub_use_case.calls[0][1], "is_set")()
 
 
 def test_reload_splits_subscription_jobs_by_protocol() -> None:
@@ -364,18 +322,7 @@ def test_reload_splits_subscription_jobs_by_protocol() -> None:
         protocol="modbus",
         acquisition_mode="SUBSCRIPTION",
     )
-    scheduler = SourceScheduler(
-        runtime_config_port=FakeRuntimeConfigPort([opcua_config, modbus_config]),
-        pull_source_state_usecase_factory=lambda: cast(
-            PullSourceStateUseCase,
-            FakePullSourceStateUseCase(),
-        ),
-        subscribe_source_state_usecase_factory=lambda: cast(
-            SubscribeSourceStateUseCase,
-            FakeSubscribeSourceStateUseCase(),
-        ),
-        settings=SchedulerSettings(scheduler_type="background"),
-    )
+    scheduler = _build_scheduler([opcua_config, modbus_config])
 
     scheduler.reload()
 

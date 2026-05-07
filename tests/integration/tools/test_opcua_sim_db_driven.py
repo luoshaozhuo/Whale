@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import pytest
 
-from tools.opcua_sim.fleet_runtime import OpcUaFleetRuntime
+from tools.source_simulation.opcua_sim.fleet_runtime import OpcUaFleetRuntime
 
 
 @pytest.mark.integration
@@ -140,7 +140,7 @@ def test_multi_server_fleet_from_database() -> None:
 @pytest.mark.integration
 def test_single_server_delivers_10hz_update_rate() -> None:
     """Subscribe to 20 variables on one 10Hz server, verify ~100ms update interval."""
-    from tools.opcua_sim.models import OpcUaServerConfig
+    from tools.source_simulation.opcua_sim.models import OpcUaServerConfig
     import time as _t
 
     async def _run() -> None:
@@ -195,7 +195,7 @@ def test_all_30_servers_concurrent_10hz_update() -> None:
     Opens one client at a time, reads 3 variable values, moves to next server.
     Each server should return non-zero values from its 10Hz update thread.
     """
-    from tools.opcua_sim.models import OpcUaServerConfig
+    from tools.source_simulation.opcua_sim.models import OpcUaServerConfig
     import time as _t
 
     async def _sample_one(endpoint: str) -> tuple[int, float]:

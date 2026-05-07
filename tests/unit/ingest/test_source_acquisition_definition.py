@@ -12,7 +12,7 @@ from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionDa
 def test_definition_preserves_config_fields() -> None:
     """Expose acquisition config fields without mutating their content."""
     definition = SourceAcquisitionDefinition(
-        model_id="goldwind_gw121_opcua",
+        ld_id="goldwind_gw121_opcua",
         connection=SourceConnectionData(
             endpoint="opc.tcp://127.0.0.1:4840",
             params={
@@ -25,11 +25,10 @@ def test_definition_preserves_config_fields() -> None:
             AcquisitionItemData(
                 key="TotW",
                 locator="s=WTG_01.TotW",
-                display_name="TotW",
             )
         ],
     )
 
-    assert definition.model_id == "goldwind_gw121_opcua"
+    assert definition.ld_id == "goldwind_gw121_opcua"
     assert definition.connection.endpoint == "opc.tcp://127.0.0.1:4840"
     assert definition.items[0].key == "TotW"

@@ -5,10 +5,44 @@ from __future__ import annotations
 import argparse
 from importlib import import_module
 
+from sqlalchemy.engine import Engine
 from sqlalchemy import inspect, text
 
 from whale.shared.persistence import Base
 from whale.shared.persistence.session import _db_url, engine
+
+_SCADA_SERVER_VIEW_NAME = "v_scada_server"
+_SCADA_SERVER_VIEW_SQL = f"""
+CREATE VIEW {_SCADA_SERVER_VIEW_NAME} AS
+SELECT
+    ep.endpoint_id AS endpoint_id,
+    ep.ied_id AS ied_id,
+    ld.ld_instance_id AS ld_instance_id,
+    ied.ied_name AS ied_name,
+    asset.asset_code AS asset_code,
+    asset.asset_name AS asset_name,
+    ep.access_point_name AS access_point_name,
+    ep.application_protocol AS application_protocol,
+    ep.transport AS transport,
+    ep.host AS host,
+    ep.port AS port,
+    ep.namespace_uri AS namespace_uri,
+    ep.security_policy AS security_policy,
+    ep.security_mode AS security_mode,
+    ep.auth_type AS auth_type,
+    ep.credential_ref AS credential_ref,
+    ld.asset_instance_id AS asset_instance_id,
+    ld.signal_profile_id AS signal_profile_id,
+    ld.ld_name AS ld_name,
+    ld.path_prefix AS path_prefix
+FROM scada_communication_endpoint AS ep
+JOIN scada_ied AS ied
+    ON ied.ied_id = ep.ied_id
+JOIN scada_ld_instance AS ld
+    ON ld.endpoint_id = ep.endpoint_id
+JOIN asset_instance AS asset
+    ON asset.asset_instance_id = ld.asset_instance_id
+"""
 
 
 def init_db(force: bool = False) -> None:
@@ -32,6 +66,7 @@ def init_db(force: bool = False) -> None:
 def initialize_db() -> None:
     import_module("whale.shared.persistence.orm")
     Base.metadata.create_all(bind=engine)
+    ensure_shared_views(bind=engine)
 
 
 def reset_db() -> None:
@@ -46,6 +81,8 @@ def reset_db() -> None:
             for (v,) in views:
                 if v.startswith("v_"):
                     conn.execute(text(f"DROP VIEW IF EXISTS {v} CASCADE"))
+            # Clean up removed legacy tables that may still hold FKs into current tables.
+            conn.execute(text("DROP TABLE IF EXISTS scada_ld_signal_override CASCADE"))
     Base.metadata.drop_all(bind=engine)
 
     if _db_url.get_dialect().name == "sqlite":
@@ -54,6 +91,13 @@ def reset_db() -> None:
         db_path = Path(str(_db_url.database))
         if db_path.exists():
             db_path.unlink()
+
+
+def ensure_shared_views(*, bind: Engine) -> None:
+    """Create the read-only shared SQL views required by the persistence layer."""
+    with bind.begin() as conn:
+        conn.execute(text(f"DROP VIEW IF EXISTS {_SCADA_SERVER_VIEW_NAME}"))
+        conn.execute(text(_SCADA_SERVER_VIEW_SQL))
 
 
 def _has_existing_schema() -> bool:

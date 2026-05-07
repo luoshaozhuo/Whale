@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from threading import Event
-from typing import Protocol
 
 from whale.ingest.ports.source.source_acquisition_definition_port import (
     SourceAcquisitionDefinitionPort,
@@ -19,13 +18,6 @@ from whale.ingest.usecases.roles.state_update_role import StateUpdateRole
 from whale.ingest.usecases.roles.subscribe_role import SubscribeRole
 
 
-class SnapshotEmitter(Protocol):
-    """Minimal snapshot emission contract used by the subscribe use case."""
-
-    def execute(self) -> object:
-        """Emit one full latest-state snapshot."""
-
-
 class SubscribeSourceStateUseCase:
     """Start long-running subscriptions that refresh the local state cache."""
 
@@ -34,13 +26,10 @@ class SubscribeSourceStateUseCase:
         acquisition_definition_port: SourceAcquisitionDefinitionPort,
         acquisition_port_registry: SourceAcquisitionPortRegistry,
         state_cache_port: SourceStateCachePort,
-        snapshot_emitter: SnapshotEmitter | None = None,
     ) -> None:
-        """Build dependencies for one long-running cache-refresh job."""
         self._acquisition_definition_port = acquisition_definition_port
         self._acquisition_port_registry = acquisition_port_registry
         self._update_role = StateUpdateRole(state_cache_port=state_cache_port)
-        self._snapshot_emitter = snapshot_emitter
 
     async def execute(
         self,
@@ -65,5 +54,4 @@ class SubscribeSourceStateUseCase:
             acquisition_definition_port=self._acquisition_definition_port,
             acquisition_port=self._acquisition_port_registry.get(runtime_config.protocol),
             state_update_role=self._update_role,
-            snapshot_emitter=self._snapshot_emitter,
         )

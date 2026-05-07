@@ -57,13 +57,25 @@ class AcquisitionTask(Base):
         comment="任务生命周期状态：STARTED / RUNNING / STOPPING / ERROR / SUCCESS / STOPPED"
     )
     request_timeout_ms: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=5000, comment="单次 read 请求超时，单位毫秒"
+        Integer, nullable=False, default=500, comment="单次 read 请求超时，单位毫秒"
     )
     poll_interval_ms: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=1000, comment="采集轮询周期，单位毫秒"
+        Integer, nullable=False, default=100, comment="采集轮询周期，单位毫秒"
     )
     enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, comment="配置态启停标记，不表示运行状态"
+    )
+    freshness_timeout_ms: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=30000,
+        comment="数据新鲜度超时(ms)，用于判断 latest-state 是否 stale；polling/read 模式主要使用"
+    )
+    alive_timeout_ms: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=60000,
+        comment="链路存活超时(ms)，subscribe 模式主要使用；polling 模式也可用于判断 source 是否连续失败导致 offline"
+    )
+    protocol_params: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=dict,
+        comment="协议专属参数，避免 acq_task 被 OPC UA / Modbus / IEC 61850 字段污染"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), comment="创建时间"

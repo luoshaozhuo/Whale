@@ -11,6 +11,7 @@ from sqlalchemy import inspect
 from whale.ingest.config import CONFIG, PostgresDatabaseConfig, SqliteDatabaseConfig
 from whale.ingest.framework.persistence.base import Base
 from whale.ingest.framework.persistence.session import engine, session_scope
+from whale.shared.persistence.init_db import ensure_shared_views
 
 
 def init_db() -> None:
@@ -34,6 +35,7 @@ def initialize_db(*, insert_sample_data: bool) -> None:
     Base.metadata.create_all(bind=engine)
     from whale.shared.persistence import Base as SharedBase
     SharedBase.metadata.create_all(bind=engine)
+    ensure_shared_views(bind=engine)
     if insert_sample_data:
         load_default_sample_data()
 

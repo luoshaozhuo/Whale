@@ -303,6 +303,7 @@ def _create_acquisition_tasks(session: Session,
             task_name=f"task_{asset.asset_code}",
             ld_instance_id=ld.ld_instance_id,
             acquisition_mode="SUBSCRIBE",
+            poll_interval_ms=100,
         )
         session.add(task)
         tasks.append(task)
