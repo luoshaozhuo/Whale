@@ -3,7 +3,6 @@
 from tools.source_simulation.domain import (
     AuthConfig,
     HeartbeatConfig,
-    SharedPoint,
     SimulatedPoint,
     SimulatedSource,
     SecurityConfig,
@@ -17,7 +16,6 @@ from tools.source_simulation.ports import SourceSimulator
 __all__ = [
     "AuthConfig",
     "HeartbeatConfig",
-    "SharedPoint",
     "SimulatedPoint",
     "SimulatedSource",
     "SecurityConfig",

@@ -3,36 +3,154 @@
 from __future__ import annotations
 
 import math
+import multiprocessing
+import queue
 import random
-import threading
 import time
+import traceback
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from multiprocessing import queues, synchronize
 
 from tools.source_simulation.adapters.registry import build_simulator
-from tools.source_simulation.domain import (
-    SharedPoint,
-    SimulatedSource,
-    UpdateConfig,
-)
-from tools.source_simulation.ports import SourceSimulator
+from tools.source_simulation.domain import SimulatedPoint, SimulatedSource, UpdateConfig
+
+_STARTUP_TIMEOUT_SECONDS = 10.0
+_READY_POLL_SECONDS = 0.05
+
+
+def _normalize_point_data_type(raw_data_type: str) -> str:
+    normalized = raw_data_type.strip().upper()
+    if normalized in {"BOOL", "BOOLEAN"}:
+        return "BOOLEAN"
+    if normalized in {
+        "INT8",
+        "INT16",
+        "INT32",
+        "INT64",
+        "INT8U",
+        "INT16U",
+        "INT32U",
+        "UINT8",
+        "UINT16",
+        "UINT32",
+    }:
+        return "INT32"
+    if normalized in {"FLOAT", "FLOAT32", "FLOAT64", "DOUBLE"}:
+        return "FLOAT64"
+    if normalized in {"DATETIME", "TIMESTAMP"}:
+        return "DATETIME"
+    if normalized in {"STRING", "VISSTRING255", "TEXT"}:
+        return "STRING"
+    return "FLOAT64"
+
+
+def _select_points_for_update(
+    points: Sequence[SimulatedPoint],
+    update_config: UpdateConfig,
+) -> tuple[SimulatedPoint, ...]:
+    total = len(points)
+    if total == 0:
+        return ()
+
+    if update_config.update_count is not None:
+        selected_count = min(total, update_config.update_count)
+    else:
+        selected_count = math.floor(total * update_config.update_ratio)
+
+    return tuple(points[:selected_count])
+
+
+def _build_random_value(
+    rng: random.Random,
+    data_type: str,
+) -> str | int | float | bool:
+    normalized_data_type = _normalize_point_data_type(data_type)
+    if normalized_data_type == "BOOLEAN":
+        return rng.choice([True, False])
+    if normalized_data_type == "INT32":
+        return rng.randint(0, 100)
+    if normalized_data_type == "STRING":
+        return rng.choice(["foo", "bar", "baz"])
+    if normalized_data_type == "DATETIME":
+        return datetime.now(tz=UTC).isoformat()
+    return rng.uniform(0.0, 100.0)
+
+
+def _build_update_writes(
+    points: Sequence[SimulatedPoint],
+    rng: random.Random,
+) -> dict[str, str | int | float | bool]:
+    writes: dict[str, str | int | float | bool] = {}
+    for point in points:
+        writes[point.key] = _build_random_value(rng, point.data_type)
+    return writes
+
+
+def _run_simulator_process(
+    source: SimulatedSource,
+    update_config: UpdateConfig,
+    stop_event: synchronize.Event,
+    ready_event: synchronize.Event,
+    error_queue: queues.Queue[str],
+) -> None:
+    simulator = None
+    try:
+        simulator = build_simulator(source)
+        simulator.start()
+
+        # 一个 source 对应一个独立子进程，尽量贴近真实“一个设备一个 server”。
+        ready_event.set()
+
+        # 周期写入放在子进程内部完成，主进程只负责生命周期，不再跨进程持有 simulator。
+        update_points = _select_points_for_update(source.points, update_config)
+        rng = random.Random(
+            f"{source.connection.name}:{source.connection.host}:{source.connection.port}"
+        )
+        next_update_at = time.monotonic() + update_config.interval_seconds
+
+        while not stop_event.is_set():
+            if not update_config.enabled:
+                stop_event.wait(0.1)
+                continue
+
+            now = time.monotonic()
+            if now >= next_update_at:
+                writes = _build_update_writes(update_points, rng)
+                if writes:
+                    simulator.writes(writes)
+
+                next_update_at += update_config.interval_seconds
+                while next_update_at <= now:
+                    next_update_at += update_config.interval_seconds
+
+            wait_seconds = min(0.05, max(0.0, next_update_at - time.monotonic()))
+            stop_event.wait(wait_seconds)
+    except Exception as exc:
+        error_queue.put(
+            (
+                f"Simulator process failed for source={source.connection.name} "
+                f"endpoint={source.connection.host}:{source.connection.port}: {exc}\n"
+                f"{traceback.format_exc()}"
+            )
+        )
+    finally:
+        if simulator is not None:
+            simulator.stop()
 
 
 @dataclass
 class SourceSimulatorFleet:
     """Build, start and stop one homogeneous simulator fleet."""
 
-    simulators: list[SourceSimulator]
+    sources: tuple[SimulatedSource, ...]
     update_config: UpdateConfig
-    _shared_points: tuple[SharedPoint, ...]
-    _stop_updates: threading.Event = field(init=False, repr=False, default_factory=threading.Event)
-    _update_thread: threading.Thread | None = field(init=False, repr=False, default=None)
-    _update_points: tuple[SharedPoint, ...] = field(init=False, repr=False, default=())
-    _random: random.Random = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        self._random = random.Random(20260506)
+    join_timeout_seconds: float = 5.0
+    _processes: list[multiprocessing.Process] = field(init=False, repr=False, default_factory=list)
+    _stop_events: list[synchronize.Event] = field(init=False, repr=False, default_factory=list)
+    _ready_events: list[synchronize.Event] = field(init=False, repr=False, default_factory=list)
+    _error_queue: queues.Queue[str] | None = field(init=False, repr=False, default=None)
 
     @classmethod
     def create(
@@ -43,7 +161,10 @@ class SourceSimulatorFleet:
     ) -> "SourceSimulatorFleet":
         """Build one fleet from externally prepared simulated sources."""
         resolved_config = update_config or UpdateConfig()
-        source_list = list(sources)
+        source_list = tuple(sources)
+
+        if not source_list:
+            raise ValueError("A fleet must contain at least one source")
 
         protocols = {
             source.connection.protocol.strip().lower().replace("_", "").replace("-", "")
@@ -52,94 +173,55 @@ class SourceSimulatorFleet:
         if len(protocols) > 1:
             raise ValueError("A fleet can only contain one protocol")
 
-        simulators: list[SourceSimulator] = []
-
-        for source in source_list:
-            simulators.append(build_simulator(source))
-
         return cls(
-            simulators=simulators,
+            sources=source_list,
             update_config=resolved_config,
-            _shared_points=cls._build_shared_points_from_sources(source_list),
         )
-
-    @classmethod
-    def _build_shared_points_from_sources(
-        cls,
-        sources: Sequence[SimulatedSource],
-    ) -> tuple[SharedPoint, ...]:
-        if not sources:
-            return ()
-
-        shared_points: list[SharedPoint] = []
-        seen_paths: set[str] = set()
-        for point in sources[0].points:
-            if point.key in seen_paths:
-                continue
-            seen_paths.add(point.key)
-            shared_points.append(
-                SharedPoint(
-                    path=point.key,
-                    data_type=cls._normalize_point_data_type(point.data_type),
-                    initial_value=point.initial_value,
-                )
-            )
-        return tuple(shared_points)
-
-    def _resolve_shared_points(self) -> tuple[SharedPoint, ...]:
-        if not self.simulators:
-            return ()
-
-        discovered = self.simulators[0].discover_write_points()
-        return tuple(
-            SharedPoint(
-                path=path,
-                data_type=normalized_data_type,
-                initial_value=self._build_random_value(normalized_data_type),
-            )
-            for path, data_type in discovered
-            for normalized_data_type in [self._normalize_point_data_type(data_type)]
-        )
-
-    @staticmethod
-    def _normalize_point_data_type(raw_data_type: str) -> str:
-        normalized = raw_data_type.strip().upper()
-        if normalized in {"BOOL", "BOOLEAN"}:
-            return "BOOLEAN"
-        if normalized in {
-            "INT8",
-            "INT16",
-            "INT32",
-            "INT64",
-            "INT8U",
-            "INT16U",
-            "INT32U",
-            "UINT8",
-            "UINT16",
-            "UINT32",
-        }:
-            return "INT32"
-        if normalized in {"FLOAT", "FLOAT32", "FLOAT64", "DOUBLE"}:
-            return "FLOAT64"
-        if normalized in {"DATETIME", "TIMESTAMP"}:
-            return "DATETIME"
-        if normalized in {"STRING", "VISSTRING255", "TEXT"}:
-            return "STRING"
-        return "FLOAT64"
 
     def start(self) -> "SourceSimulatorFleet":
-        for simulator in self.simulators:
-            simulator.start()
-        if not self._shared_points:
-            self._shared_points = self._resolve_shared_points()
-        self._update_points = tuple(self._select_points_for_update())
-        self._start_update_loop()
+        if self._processes:
+            return self
+
+        try:
+            self._start_processes()
+            self._wait_until_ready()
+        except Exception:
+            self.stop()
+            raise
+
         return self
 
     def stop(self) -> None:
-        self._stop_update_loop()
-        for simulator in reversed(self.simulators):
-            simulator.stop()
+        if not self._processes:
+            self._close_error_queue()
+            return
+
+        # 先通知所有子进程自行收尾，给正常 stop 一个优先机会。
+        for stop_event in self._stop_events:
+            stop_event.set()
+
+        for process in self._processes:
+            process.join(timeout=self.join_timeout_seconds)
+
+        # 如果子进程没有按时退出，再逐级升级到 terminate / kill，避免测试后残留端口。
+        for process in self._processes:
+            if process.is_alive():
+                process.terminate()
+
+        for process in self._processes:
+            process.join(timeout=self.join_timeout_seconds)
+
+        for process in self._processes:
+            if process.is_alive():
+                process.kill()
+
+        for process in self._processes:
+            process.join()
+
+        self._processes.clear()
+        self._stop_events.clear()
+        self._ready_events.clear()
+        self._close_error_queue()
 
     def __enter__(self) -> "SourceSimulatorFleet":
         return self.start()
@@ -147,71 +229,80 @@ class SourceSimulatorFleet:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         self.stop()
 
-    def _start_update_loop(self) -> None:
-        if self._update_thread is not None or not self.simulators:
-            return
-        self._stop_updates.clear()
-        self._update_thread = threading.Thread(
-            target=self._run_update_loop,
-            daemon=True,
-            name="source-simulator-fleet-updates",
-        )
-        self._update_thread.start()
+    def _start_processes(self) -> None:
+        context = multiprocessing.get_context()
+        self._error_queue = context.Queue()
 
-    def _stop_update_loop(self) -> None:
-        if self._update_thread is None:
-            return
-        self._stop_updates.set()
-        self._update_thread.join(timeout=max(self._tick_interval_seconds * 2.0, 1.0))
-        self._update_thread = None
+        for index, source in enumerate(self.sources):
+            # ready_event 用来表示子进程已完成 server.start()；
+            # stop_event 用来请求子进程退出；
+            # error_queue 用来把启动失败原因回传给主进程。
+            stop_event = context.Event()
+            ready_event = context.Event()
+            process = context.Process(
+                target=_run_simulator_process,
+                name=f"source-simulator-{index + 1}",
+                args=(
+                    source,
+                    self.update_config,
+                    stop_event,
+                    ready_event,
+                    self._error_queue,
+                ),
+            )
+            process.start()
+            self._processes.append(process)
+            self._stop_events.append(stop_event)
+            self._ready_events.append(ready_event)
 
-    @property
-    def _tick_interval_seconds(self) -> float:
-        return self.update_config.interval_seconds
+    def _wait_until_ready(self) -> None:
+        deadline = time.monotonic() + _STARTUP_TIMEOUT_SECONDS
+        pending_indices = set(range(len(self._ready_events)))
 
-    def _run_update_loop(self) -> None:
-        interval_seconds = self._tick_interval_seconds
-        next_run_at = time.monotonic() + interval_seconds
-        while True:
-            wait_seconds = max(0.0, next_run_at - time.monotonic())
-            if self._stop_updates.wait(wait_seconds):
+        while pending_indices:
+            startup_errors = self._drain_startup_errors()
+            if startup_errors:
+                raise RuntimeError("Failed to start simulator fleet:\n" + "\n".join(startup_errors))
+
+            for index in tuple(pending_indices):
+                if self._ready_events[index].is_set():
+                    pending_indices.remove(index)
+                    continue
+
+                process = self._processes[index]
+                if not process.is_alive():
+                    raise RuntimeError(
+                        "Simulator process exited before ready: "
+                        f"name={process.name} exitcode={process.exitcode}"
+                    )
+
+            if not pending_indices:
                 break
-            started_at = time.monotonic()
-            self._apply_writes(self._build_next_writes())
-            elapsed_seconds = time.monotonic() - started_at
-            next_run_at = time.monotonic() + max(0.0, interval_seconds - elapsed_seconds)
 
-    def _build_next_writes(self) -> dict[str, str | int | float | bool]:
-        writes: dict[str, str | int | float | bool] = {}
-        for point in self._update_points:
-            writes[point.path] = self._build_random_value(point.data_type)
-        return writes
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                raise RuntimeError("Timed out waiting for simulator fleet readiness")
 
-    def _select_points_for_update(self) -> list[SharedPoint]:
-        total = len(self._shared_points)
-        if total == 0:
+            for index in tuple(pending_indices):
+                if self._ready_events[index].wait(
+                    timeout=min(_READY_POLL_SECONDS, remaining_seconds)
+                ):
+                    pending_indices.remove(index)
+
+    def _drain_startup_errors(self) -> list[str]:
+        if self._error_queue is None:
             return []
 
-        if self.update_config.update_count is not None:
-            selected_count = min(total, self.update_config.update_count)
-        else:
-            selected_count = math.floor(total * self.update_config.update_ratio)
+        errors: list[str] = []
+        while True:
+            try:
+                errors.append(self._error_queue.get_nowait())
+            except queue.Empty:
+                return errors
 
-        return list(self._shared_points[:selected_count])
-
-    def _build_random_value(self, data_type: str) -> str | int | float | bool:
-        if data_type == "BOOLEAN":
-            return self._random.choice([True, False])
-        if data_type == "INT32":
-            return self._random.randint(0, 100)
-        if data_type == "STRING":
-            return self._random.choice(["foo", "bar", "baz"])
-        if data_type == "DATETIME":
-            return datetime.now(tz=UTC).isoformat()
-        return self._random.uniform(0.0, 100.0)
-
-    def _apply_writes(self, writes: dict[str, str | int | float | bool]) -> None:
-        if not writes:
+    def _close_error_queue(self) -> None:
+        if self._error_queue is None:
             return
-        for simulator in self.simulators:
-            simulator.writes(writes)
+        self._error_queue.close()
+        self._error_queue.join_thread()
+        self._error_queue = None

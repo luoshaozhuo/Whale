@@ -5,26 +5,11 @@ from __future__ import annotations
 import pytest
 
 from tools.source_simulation.adapters.opcua import OpcUaSourceSimulator
-from tools.source_simulation.adapters.registry import build_simulator, get_builder
+from tools.source_simulation.adapters.registry import build_simulator
 from tools.source_simulation.domain import (
     SimulatedSource,
     SourceConnection,
 )
-
-
-@pytest.mark.unit
-def test_get_builder_returns_registered_opcua_builder() -> None:
-    """Resolve the explicit OPC UA simulator builder from the registry."""
-    builder = get_builder("opcua")
-
-    assert builder is OpcUaSourceSimulator
-
-
-@pytest.mark.unit
-def test_get_builder_rejects_unknown_simulator_type() -> None:
-    """Raise a clear error for an unsupported simulator type."""
-    with pytest.raises(ValueError, match="Unsupported source simulator type"):
-        get_builder("modbus")
 
 
 @pytest.mark.unit
@@ -39,7 +24,7 @@ def test_build_simulator_uses_source_simulator_type() -> None:
             port=4840,
             transport="tcp",
             protocol="opcua",
-            params={"namespace_uri": "urn:test:registry"},
+            namespace_uri="urn:test:registry",
         ),
         points=(),
     )
@@ -47,3 +32,24 @@ def test_build_simulator_uses_source_simulator_type() -> None:
 
     assert simulator.name == "WTG_01"
     assert simulator.endpoint == "opc.tcp://127.0.0.1:4840"
+    assert isinstance(simulator, OpcUaSourceSimulator)
+
+
+@pytest.mark.unit
+def test_build_simulator_rejects_unknown_protocol() -> None:
+    """Raise a clear error for an unsupported simulator type."""
+    source = SimulatedSource(
+        connection=SourceConnection(
+            name="S1",
+            ied_name="IED1",
+            ld_name="LD0",
+            host="127.0.0.1",
+            port=502,
+            transport="tcp",
+            protocol="modbus",
+        ),
+        points=(),
+    )
+
+    with pytest.raises(ValueError, match="Unsupported source simulator type"):
+        build_simulator(source)

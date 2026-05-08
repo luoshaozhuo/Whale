@@ -51,5 +51,6 @@ markers = [
     "smoke: smoke tests",
     "integration: integration tests",
     "e2e: end-to-end tests",
+    "load: performance load tests (not run in regular CI)",
     "stress: performance and stress tests (not run in regular CI)",
 ]

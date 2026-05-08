@@ -10,10 +10,10 @@ from typing import Any
 from asyncua import Client, Node, ua  # type: ignore[import-untyped]
 
 from tools.source_simulation.domain import (
+    SourceNodeInfo,
     SourceConnection,
     SourceReadPoint,
 )
-
 
 # 外部注入的数据变化处理函数类型。
 # 支持两种：
@@ -53,9 +53,7 @@ class OpcUaSubscriptionHandler:
         if self._is_async_callback:
             # 外部处理函数是 async def：
             # 直接创建异步任务，让 event loop 后续调度执行。
-            task = asyncio.create_task(
-                self._on_data_change(node, val, data)
-            )
+            task = asyncio.create_task(self._on_data_change(node, val, data))
         else:
             # 外部处理函数是普通 def：
             # 放入线程池执行，避免同步 I/O 阻塞 event loop。
@@ -102,6 +100,10 @@ class OpcUaSourceReader:
         # namespace index 需要连接 server 后，根据 namespace_uri 查询得到。
         self._nsidx: int | None = None
 
+        # 这是 OPC UA client 会话内的技术缓存，只缓存 Node 对象；
+        # 不保存点位值、质量、时间戳等业务状态，也不改变 reader 的业务无状态语义。
+        self._node_cache: dict[str, Node] = {}
+
     @property
     def connection(self) -> SourceConnection:
         return self._connection
@@ -122,7 +124,9 @@ class OpcUaSourceReader:
         self._client = client
 
         # 如果配置了 namespace_uri，则查询对应的 namespace index。
-        namespace_uri = self._connection.params.get("namespace_uri")
+        namespace_uri = self._connection.namespace_uri or self._connection.params.get(
+            "namespace_uri"
+        )
         if namespace_uri is not None:
             self._nsidx = await client.get_namespace_index(str(namespace_uri))
 
@@ -131,10 +135,14 @@ class OpcUaSourceReader:
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
         """退出异步上下文，断开 OPC UA 连接。"""
 
-        if self._client is not None:
-            await self._client.disconnect()
+        try:
+            if self._client is not None:
+                await self._client.disconnect()
+        finally:
+            # 连接结束后清空会话内 Node 缓存，避免跨连接复用失效 Node。
             self._client = None
             self._nsidx = None
+            self._node_cache.clear()
 
     async def read(
         self,
@@ -159,6 +167,24 @@ class OpcUaSourceReader:
 
         return await self._read_via_read_attributes(normalized_paths)
 
+    async def list_nodes(self) -> tuple[SourceNodeInfo, ...]:
+        """Return readable variable nodes with full path, type, and LD/LN/DO parts."""
+
+        client = self._client_or_raise()
+        if self._nsidx is None:
+            raise RuntimeError(
+                "Namespace index is not initialized. "
+                "Please provide namespace_uri in connection.params."
+            )
+
+        windfarm = await client.nodes.objects.get_child(f"{self._nsidx}:WindFarm")
+        return await self._collect_variable_node_infos(windfarm)
+
+    async def list_readable_variable_nodes(self) -> tuple[tuple[str, str], ...]:
+        """Return all readable variable node ids and normalized types under WindFarm."""
+
+        return tuple((node.node_path, node.data_type) for node in await self.list_nodes())
+
     async def subscribe(
         self,
         node_paths: Sequence[str],
@@ -180,7 +206,7 @@ class OpcUaSourceReader:
         client = self._client_or_raise()
 
         normalized_paths = self._normalize_node_paths(node_paths)
-        nodes = [client.get_node(node_path) for node_path in normalized_paths]
+        nodes = self._get_nodes(normalized_paths)
 
         # 创建订阅处理器，外部处理函数注入到 handler 内部。
         handler = OpcUaSubscriptionHandler(on_data_change)
@@ -223,6 +249,21 @@ class OpcUaSourceReader:
 
         return self._client
 
+    def _get_nodes(self, node_paths: Sequence[str]) -> list[Node]:
+        """返回当前会话内可复用的 Node 对象列表。"""
+
+        client = self._client_or_raise()
+        nodes: list[Node] = []
+
+        for node_path in node_paths:
+            node = self._node_cache.get(node_path)
+            if node is None:
+                node = client.get_node(node_path)
+                self._node_cache[node_path] = node
+            nodes.append(node)
+
+        return nodes
+
     def _normalize_node_paths(self, node_paths: Sequence[str]) -> tuple[str, ...]:
         """将节点路径统一转换为完整 NodeId 字符串。
 
@@ -246,6 +287,66 @@ class OpcUaSourceReader:
 
         return f"ns={self._nsidx};{node_path}"
 
+    async def _collect_variable_node_infos(self, node: Node) -> tuple[SourceNodeInfo, ...]:
+        node_infos: list[SourceNodeInfo] = []
+        for child in await node.get_children():
+            node_class = await child.read_node_class()
+            if node_class == ua.NodeClass.Variable:
+                node_path = self._node_id_to_string(child)
+                node_infos.append(
+                    SourceNodeInfo(
+                        node_path=node_path,
+                        data_type=await self._source_data_type_from_node(child),
+                        ld_name=self._ld_name_from_node_path(node_path),
+                        ln_name=self._ln_name_from_node_path(node_path),
+                        do_name=self._do_name_from_node_path(node_path),
+                    )
+                )
+                continue
+            node_infos.extend(await self._collect_variable_node_infos(child))
+        return tuple(node_infos)
+
+    @staticmethod
+    def _node_id_to_string(node: Node) -> str:
+        node_id = getattr(node, "nodeid", None)
+        if node_id is None:
+            raise RuntimeError("Node is missing nodeid")
+        if hasattr(node_id, "to_string"):
+            return str(node_id.to_string())
+        return str(node_id)
+
+    async def _source_data_type_from_node(self, node: Node) -> str:
+        data_type = await node.read_data_type()
+        identifier = getattr(data_type, "Identifier", None)
+        if identifier == 1:
+            return "BOOLEAN"
+        if identifier == 6:
+            return "INT32"
+        if identifier == 12:
+            return "STRING"
+        return "FLOAT64"
+
+    @staticmethod
+    def _logical_path_parts(node_path: str) -> tuple[str, str, str, str]:
+        try:
+            logical_path = node_path.split(";s=", maxsplit=1)[1]
+            ied_name, ld_name, ln_name, do_name = logical_path.split(".", maxsplit=3)
+        except (IndexError, ValueError) as exc:
+            raise RuntimeError(f"Unexpected OPC UA node path format: {node_path}") from exc
+        return ied_name, ld_name, ln_name, do_name
+
+    @classmethod
+    def _ld_name_from_node_path(cls, node_path: str) -> str:
+        return cls._logical_path_parts(node_path)[1]
+
+    @classmethod
+    def _ln_name_from_node_path(cls, node_path: str) -> str:
+        return cls._logical_path_parts(node_path)[2]
+
+    @classmethod
+    def _do_name_from_node_path(cls, node_path: str) -> str:
+        return cls._logical_path_parts(node_path)[3]
+
     async def _read_via_read_values(
         self,
         node_paths: Sequence[str],
@@ -253,7 +354,7 @@ class OpcUaSourceReader:
         """通过 read_values 批量读取裸值。"""
 
         client = self._client_or_raise()
-        nodes = [client.get_node(node_path) for node_path in node_paths]
+        nodes = self._get_nodes(node_paths)
 
         values = await client.read_values(nodes)
 
@@ -279,7 +380,7 @@ class OpcUaSourceReader:
         """
 
         client = self._client_or_raise()
-        nodes = [client.get_node(node_path) for node_path in node_paths]
+        nodes = self._get_nodes(node_paths)
 
         data_values = await client.read_attributes(
             nodes,
@@ -290,9 +391,7 @@ class OpcUaSourceReader:
             SourceReadPoint(
                 path=node_path,
                 value=data_value.Value.Value if data_value.Value is not None else None,
-                status=str(data_value.StatusCode)
-                if data_value.StatusCode is not None
-                else None,
+                status=str(data_value.StatusCode) if data_value.StatusCode is not None else None,
                 source_timestamp=data_value.SourceTimestamp,
                 server_timestamp=data_value.ServerTimestamp,
             )

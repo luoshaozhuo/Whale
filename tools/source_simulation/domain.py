@@ -11,6 +11,7 @@ from typing import Any
 class UpdateConfig:
     """Shared periodic update config used by the fleet scheduler."""
 
+    enabled: bool = True
     interval_seconds: float = 5.0
     update_ratio: float = 1.0
     update_count: int | None = None
@@ -124,15 +125,6 @@ class SimulatedSource:
 
 
 @dataclass(frozen=True, slots=True)
-class SharedPoint:
-    """Fleet update point with only write path, normalized type and initial value."""
-
-    path: str
-    data_type: str
-    initial_value: str | int | float | bool | None
-
-
-@dataclass(frozen=True, slots=True)
 class SourceReadPoint:
     """One point value plus timestamps returned by a simulation source."""
 
@@ -141,3 +133,14 @@ class SourceReadPoint:
     status: str | None = None
     source_timestamp: datetime | None = None
     server_timestamp: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceNodeInfo:
+    """One readable source variable node plus parsed logical path parts."""
+
+    node_path: str
+    data_type: str
+    ld_name: str
+    ln_name: str
+    do_name: str

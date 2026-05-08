@@ -16,6 +16,7 @@ from __future__ import annotations
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol, cast
 
 from asyncua import ua  # type: ignore[import-untyped]
 from asyncua.sync import Server  # type: ignore[import-untyped]
@@ -32,6 +33,12 @@ class OpcUaSourceSimulatorError(ValueError):
     """当 OPC UA 仿真器启动参数非法时抛出。"""
 
 
+class _VariableNode(Protocol):
+    def write_value(self, value: object) -> object: ...
+
+    def set_writable(self) -> object: ...
+
+
 class OpcUaSourceSimulator:
     """OPC UA 仿真源适配器。
 
@@ -42,13 +49,17 @@ class OpcUaSourceSimulator:
         self,
         source: SimulatedSource,
     ) -> None:
-        normalized_protocol = source.connection.protocol.strip().lower().replace("_", "").replace("-", "")
+        normalized_protocol = (
+            source.connection.protocol.strip().lower().replace("_", "").replace("-", "")
+        )
         if normalized_protocol != "opcua":
             raise OpcUaSourceSimulatorError("OpcUaSourceSimulator only supports `opcua` sources")
 
         namespace_uri = str(source.connection.namespace_uri or "").strip()
         if not namespace_uri:
-            raise OpcUaSourceSimulatorError("OPC UA source simulator requires connection.namespace_uri")
+            raise OpcUaSourceSimulatorError(
+                "OPC UA source simulator requires connection.namespace_uri"
+            )
 
         if not source.connection.ied_name.strip():
             raise OpcUaSourceSimulatorError("OPC UA source simulator requires connection.ied_name")
@@ -69,7 +80,7 @@ class OpcUaSourceSimulator:
         #    例如："WPPD1.DevSt"
         # 2. full logical path
         #    例如："IED001.LD0.WPPD1.DevSt"
-        self._write_targets_by_key: dict[str, tuple[object, SimulatedPoint]] = {}
+        self._write_targets_by_key: dict[str, tuple[_VariableNode, SimulatedPoint]] = {}
 
     @property
     def endpoint(self) -> str:
@@ -156,6 +167,8 @@ class OpcUaSourceSimulator:
         if self._server is None:
             raise RuntimeError("Simulator runtime must be started before writes()")
 
+        batch_timestamp = datetime.now(tz=UTC)
+
         for key, value in values_by_key.items():
             target = self._write_targets_by_key.get(key)
             if target is None:
@@ -164,21 +177,10 @@ class OpcUaSourceSimulator:
             node, point = target
 
             try:
-                node.write_value(self._build_data_value_from_value(point, value))
+                node.write_value(self._build_data_value_from_value(point, value, batch_timestamp))
             except Exception:
                 # 单点写入失败，不影响其他点位。
-                pass
-
-    def discover_write_points(self) -> tuple[tuple[str, str], ...]:
-        """返回可写点位列表。"""
-
-        if self._server is None:
-            raise RuntimeError("Simulator runtime must be started before discover_write_points()")
-
-        return tuple(
-            (logical_path(self._source.connection, point), point.data_type)
-            for point in self._source.points
-        )
+                continue
 
     def _build_nodeset_file(self) -> Path:
         """生成临时 NodeSet XML 文件。"""
@@ -230,16 +232,16 @@ class OpcUaSourceSimulator:
     def _build_variable_specs(
         self,
         server: Server,
-    ) -> tuple[tuple[object, SimulatedPoint], ...]:
+    ) -> tuple[tuple[_VariableNode, SimulatedPoint], ...]:
         """根据 IED.LD.LN.DO 逻辑路径获取 XML 创建出来的变量节点。"""
 
         namespace_index = server.get_namespace_index(self._namespace_uri)
 
-        specs: list[tuple[object, SimulatedPoint]] = []
+        specs: list[tuple[_VariableNode, SimulatedPoint]] = []
 
         for point in self._source.points:
             full_path = logical_path(self._source.connection, point)
-            node = server.get_node(f"ns={namespace_index};s={full_path}")
+            node = cast(_VariableNode, server.get_node(f"ns={namespace_index};s={full_path}"))
 
             try:
                 node.set_writable()
@@ -254,14 +256,15 @@ class OpcUaSourceSimulator:
         self,
         point: SimulatedPoint,
         value: str | int | float | bool | None,
+        timestamp: datetime | None = None,
     ) -> ua.DataValue:
         """根据点位定义和值构造 OPC UA DataValue。"""
 
-        now = datetime.now(tz=UTC)
+        now = timestamp or datetime.now(tz=UTC)
 
         return ua.DataValue(
             Value=self._build_variant_from_value(point, value),
-            StatusCode=ua.StatusCode(ua.StatusCodes.Good),
+            StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
             SourceTimestamp=now,
             ServerTimestamp=now,
         )
