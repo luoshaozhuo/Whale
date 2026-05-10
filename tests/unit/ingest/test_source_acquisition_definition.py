@@ -14,21 +14,27 @@ def test_definition_preserves_config_fields() -> None:
     definition = SourceAcquisitionDefinition(
         ld_id="goldwind_gw121_opcua",
         connection=SourceConnectionData(
-            endpoint="opc.tcp://127.0.0.1:4840",
-            params={
-                "security_policy": "None",
-                "security_mode": "None",
-                "namespace_uri": "urn:windfarm:2wtg",
-            },
+            host="127.0.0.1",
+            port=4840,
+            ied_name="IED_WTG_01",
+            ld_name="WTG_01",
+            namespace_uri="urn:windfarm:2wtg",
+            security_policy="None",
+            security_mode="None",
         ),
         items=[
             AcquisitionItemData(
                 key="TotW",
-                locator="s=WTG_01.TotW",
+                profile_item_id=1,
+                relative_path="MMXU1.TotW.mag.f",
             )
         ],
     )
 
     assert definition.ld_id == "goldwind_gw121_opcua"
-    assert definition.connection.endpoint == "opc.tcp://127.0.0.1:4840"
+    assert definition.connection.ied_name == "IED_WTG_01"
+    assert definition.connection.ld_name == "WTG_01"
+    assert definition.connection.namespace_uri == "urn:windfarm:2wtg"
     assert definition.items[0].key == "TotW"
+    assert definition.items[0].profile_item_id == 1
+    assert definition.items[0].relative_path == "MMXU1.TotW.mag.f"

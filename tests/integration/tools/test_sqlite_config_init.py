@@ -56,10 +56,10 @@ def test_sqlite_config_init_script_creates_db_from_default_templates(
         server_view_columns = conn.execute("PRAGMA table_info(v_scada_server)").fetchall()
 
     assert org_count is not None and int(org_count[0]) >= 1
-    assert asset_count is not None and int(asset_count[0]) >= 30
+    assert asset_count is not None and int(asset_count[0]) >= 10
     assert ied_count is not None and int(ied_count[0]) >= 1
     assert item_count is not None and int(item_count[0]) > 0
-    assert task_count is not None and int(task_count[0]) >= 30
+    assert task_count is not None and int(task_count[0]) >= 10
     assert "scada_ld_signal_override" not in table_names
     assert server_count is not None and int(server_count[0]) >= 1
     assert [column[1] for column in server_view_columns] == [

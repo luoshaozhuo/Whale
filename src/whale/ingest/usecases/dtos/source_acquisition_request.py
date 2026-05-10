@@ -1,20 +1,49 @@
-"""Acquisition request DTO for one source read execution."""
+"""采集请求 DTO。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from whale.ingest.usecases.dtos.acquisition_item_data import AcquisitionItemData
 from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionData
 
 
 @dataclass(slots=True)
-class SourceAcquisitionRequest:
-    """Carry the concrete request payload needed by one acquisition adapter."""
+class AcquisitionExecutionOptions:
+    """描述采集请求的执行选项。"""
 
-    source_id: str
-    connection: SourceConnectionData
+    protocol: str
+    transport: str
+    acquisition_mode: str
+    interval_ms: int
+    max_iteration: int | None
+    request_timeout_ms: int
+    freshness_timeout_ms: int
+    alive_timeout_ms: int
+
+    polling_max_concurrent_connections: int = 4
+    polling_connection_start_interval_ms: int = 0
+
+    subscription_start_interval_ms: int = 0
+    subscription_notification_queue_size: int = 1000
+    subscription_notification_worker_count: int = 1
+    subscription_notification_max_lag_ms: int = 5000
+
+
+@dataclass(slots=True)
+class AcquisitionItemData:
+    """描述一个待采集点位及其基础元数据。"""
+
+    key: str
+    profile_item_id: int
+    relative_path: str
+
+
+@dataclass(slots=True)
+class SourceAcquisitionRequest:
+    """描述一个 source 的采集请求。"""
+
+    request_id: str
+    task_id: int
+    execution: AcquisitionExecutionOptions
+    connections: list[SourceConnectionData]
     items: list[AcquisitionItemData]
-    resolved_endpoint: str | None = None
-    resolved_node_ids: list[str] | None = None
-    request_timeout_ms: int = 5000

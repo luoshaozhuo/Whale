@@ -1,11 +1,4 @@
-"""Runtime scheduler for ingest.
-
-Current stage:
-- focus on ONCE mode first
-- use APScheduler as the scheduling backend
-- scheduler reads enabled runtime configs and dispatches jobs
-- POLLING and SUBSCRIPTION keep explicit extension points
-"""
+"""Runtime scheduler for ingest."""
 
 from __future__ import annotations
 
@@ -22,26 +15,32 @@ from apscheduler.events import (  # type: ignore[import-untyped]
 )
 from apscheduler.schedulers.base import BaseScheduler  # type: ignore[import-untyped]
 
-from whale.ingest.ports.runtime.source_runtime_config_port import SourceRuntimeConfigPort
+from whale.ingest.ports.runtime.source_runtime_config_port import (
+    SourceRuntimeConfigData,
+    SourceRuntimeConfigPort,
+)
 from whale.ingest.runtime.acquisition_mode import AcquisitionMode
 from whale.ingest.runtime.job_status import JobStatus
+from whale.ingest.runtime.scheduler_job import (
+    AcquisitionStatus,
+    ScheduledSourceJob,
+)
 from whale.ingest.runtime.scheduler_factory import build_scheduler
-from whale.ingest.runtime.scheduler_job import ScheduledSourceJob
 from whale.ingest.runtime.scheduler_settings import SchedulerSettings
 from whale.ingest.usecases.build_runtime_plan_usecase import RuntimePlanBuildUseCase
-from whale.ingest.usecases.dtos.acquisition_status import AcquisitionStatus
-from whale.ingest.usecases.dtos.source_runtime_config_data import (
-    SourceRuntimeConfigData,
+from whale.ingest.usecases.dtos.source_acquisition_request import (
+    AcquisitionExecutionOptions,
+    SourceAcquisitionRequest,
 )
-from whale.ingest.usecases.execute_source_acquisition_usecase import (
-    ExecuteSourceAcquisitionUseCase,
+from whale.ingest.usecases.polling_acquisition_usecase import (
+    PollingAcquisitionUseCase,
 )
-from whale.ingest.usecases.subscribe_source_state_usecase import (
-    SubscribeSourceStateUseCase,
+from whale.ingest.usecases.subscribe_acquisition_usecase import (
+    SubscribeAcquisitionUseCase,
 )
 
-ExecuteSourceAcquisitionUseCaseFactory = Callable[[], ExecuteSourceAcquisitionUseCase]
-SubscribeSourceStateUseCaseFactory = Callable[[], SubscribeSourceStateUseCase]
+PollingAcquisitionUseCaseFactory = Callable[[], PollingAcquisitionUseCase]
+SubscribeAcquisitionUseCaseFactory = Callable[[], SubscribeAcquisitionUseCase]
 
 
 class SourceScheduler:
@@ -51,15 +50,15 @@ class SourceScheduler:
         self,
         runtime_config_port: SourceRuntimeConfigPort,
         plan_build_usecase: RuntimePlanBuildUseCase,
-        execute_source_acquisition_usecase_factory: ExecuteSourceAcquisitionUseCaseFactory,
-        subscribe_source_state_usecase_factory: SubscribeSourceStateUseCaseFactory,
+        polling_acquisition_usecase_factory: PollingAcquisitionUseCaseFactory,
+        subscribe_acquisition_usecase_factory: SubscribeAcquisitionUseCaseFactory,
         settings: SchedulerSettings | None = None,
     ) -> None:
         """Initialize the scheduler with required dependencies."""
         self._runtime_config_port = runtime_config_port
         self._plan_build_usecase = plan_build_usecase
-        self._execute_usecase_factory = execute_source_acquisition_usecase_factory
-        self._subscribe_source_state_usecase_factory = subscribe_source_state_usecase_factory
+        self._polling_usecase_factory = polling_acquisition_usecase_factory
+        self._subscribe_usecase_factory = subscribe_acquisition_usecase_factory
         self._settings = settings or SchedulerSettings()
         self._scheduler: BaseScheduler = build_scheduler(self._settings)
         self._jobs: dict[str, ScheduledSourceJob] = {}
@@ -119,7 +118,7 @@ class SourceScheduler:
     def _register_jobs(self) -> None:
         """Register jobs from enabled runtime configs."""
         runtime_configs = self._runtime_config_port.list_enabled()
-        polling_groups: dict[tuple[str, int], list[SourceRuntimeConfigData]] = defaultdict(list)
+        polling_groups: dict[str, list[SourceRuntimeConfigData]] = defaultdict(list)
         subscription_groups: dict[str, list[SourceRuntimeConfigData]] = defaultdict(list)
 
         for runtime_config in runtime_configs:
@@ -129,16 +128,15 @@ class SourceScheduler:
             if mode is AcquisitionMode.ONCE:
                 self._register_once_job(runtime_config)
             elif mode is AcquisitionMode.POLLING:
-                polling_groups[(protocol, runtime_config.interval_ms)].append(runtime_config)
+                polling_groups[protocol].append(runtime_config)
             elif mode is AcquisitionMode.SUBSCRIPTION:
                 subscription_groups[protocol].append(runtime_config)
             else:
                 raise ValueError(f"Unsupported acquisition mode: {mode}")
 
-        for (protocol, interval_ms), group in polling_groups.items():
+        for protocol, group in polling_groups.items():
             self._register_polling_job(
                 protocol=protocol,
-                interval_ms=interval_ms,
                 runtime_configs=tuple(group),
             )
 
@@ -173,30 +171,26 @@ class SourceScheduler:
         self,
         *,
         protocol: str,
-        interval_ms: int,
         runtime_configs: tuple[SourceRuntimeConfigData, ...],
     ) -> None:
-        """Register one merged short polling job for configs with the same interval."""
-        if interval_ms <= 0:
-            raise ValueError("POLLING interval_ms must be greater than 0")
-
-        job_id = self._build_polling_job_id(protocol, interval_ms)
+        """Register one long-running polling job for one protocol."""
+        job_id = self._build_polling_job_id(protocol)
         if job_id in self._jobs:
             return
 
+        stop_event = Event()
         self._scheduler.add_job(
             self._run_polling_job,
-            trigger="interval",
-            seconds=interval_ms / 1000,
             id=job_id,
             replace_existing=False,
-            args=[runtime_configs],
+            args=[runtime_configs, stop_event],
         )
 
         self._jobs[job_id] = ScheduledSourceJob(
             runtime_configs=runtime_configs,
             aps_job_id=job_id,
             status=JobStatus.SCHEDULED,
+            stop_event=stop_event,
         )
 
     def _register_subscription_job(
@@ -234,31 +228,46 @@ class SourceScheduler:
         if runtime_job is not None:
             runtime_job.status = JobStatus.RUNNING
 
-        plans = self._plan_build_usecase.build_plans([runtime_config])
-        results = asyncio.run(self._execute_usecase_factory().execute(plans))
+        requests = [
+            SourceAcquisitionRequest(
+                request_id=request.request_id,
+                task_id=request.task_id,
+                execution=AcquisitionExecutionOptions(
+                    protocol=request.execution.protocol,
+                    transport=request.execution.transport,
+                    acquisition_mode=request.execution.acquisition_mode,
+                    interval_ms=request.execution.interval_ms,
+                    max_iteration=1,
+                    request_timeout_ms=request.execution.request_timeout_ms,
+                    freshness_timeout_ms=request.execution.freshness_timeout_ms,
+                    alive_timeout_ms=request.execution.alive_timeout_ms,
+                ),
+                connections=list(request.connections),
+                items=list(request.items),
+            )
+            for request in self._plan_build_usecase.build_requests([runtime_config])
+        ]
+        results = asyncio.run(self._polling_usecase_factory().execute_once(requests[0]))
         if runtime_job is not None:
             runtime_job.last_result = results[0] if results else None
 
     def _run_polling_job(
         self,
         runtime_configs: tuple[SourceRuntimeConfigData, ...],
+        stop_event: Event,
     ) -> None:
-        """Execute one merged polling tick for runtime configs sharing an interval."""
+        """Start one merged long-running polling job."""
         first_config = runtime_configs[0]
-        job_id = self._build_polling_job_id(first_config.protocol, first_config.interval_ms)
+        job_id = self._build_polling_job_id(first_config.protocol)
         runtime_job = self._jobs.get(job_id)
 
         if runtime_job is not None:
             runtime_job.status = JobStatus.RUNNING
 
-        plans = self._plan_build_usecase.build_plans(list(runtime_configs))
-        results = asyncio.run(self._execute_usecase_factory().execute(plans))
+        requests = self._plan_build_usecase.build_requests(list(runtime_configs))
+        asyncio.run(self._run_polling_requests(requests, stop_event))
         if runtime_job is not None:
-            runtime_job.last_results = results
-            runtime_job.last_result = next(
-                (result for result in results if result.status is AcquisitionStatus.FAILED),
-                results[-1] if results else None,
-            )
+            runtime_job.status = JobStatus.STOPPED if stop_event.is_set() else JobStatus.FINISHED
 
     def _run_subscription_job(
         self,
@@ -272,14 +281,42 @@ class SourceScheduler:
         if runtime_job is not None:
             runtime_job.status = JobStatus.RUNNING
 
-        asyncio.run(
-            self._subscribe_source_state_usecase_factory().execute(
-                runtime_configs=runtime_configs,
-                stop_event=stop_event,
-            )
-        )
+        requests = self._plan_build_usecase.build_requests(list(runtime_configs))
+        asyncio.run(self._run_subscription_requests(requests, stop_event))
         if runtime_job is not None:
             runtime_job.status = JobStatus.STOPPED if stop_event.is_set() else JobStatus.FINISHED
+
+    async def _run_polling_requests(
+        self,
+        requests: list[SourceAcquisitionRequest],
+        stop_event: Event,
+    ) -> None:
+        """并发启动多个 polling 聚合请求。"""
+
+        async with asyncio.TaskGroup() as task_group:
+            for request in requests:
+                task_group.create_task(
+                    self._polling_usecase_factory().execute(
+                        request=request,
+                        stop_event=stop_event,
+                    )
+                )
+
+    async def _run_subscription_requests(
+        self,
+        requests: list[SourceAcquisitionRequest],
+        stop_event: Event,
+    ) -> None:
+        """并发启动多个 subscription 聚合请求。"""
+
+        async with asyncio.TaskGroup() as task_group:
+            for request in requests:
+                task_group.create_task(
+                    self._subscribe_usecase_factory().execute(
+                        request=request,
+                        stop_event=stop_event,
+                    )
+                )
 
     def _on_job_executed_or_failed(self, event: JobExecutionEvent) -> None:
         """Handle APScheduler job completion events."""
@@ -314,9 +351,9 @@ class SourceScheduler:
         return f"once:{runtime_config_id}"
 
     @staticmethod
-    def _build_polling_job_id(protocol: str, interval_ms: int) -> str:
-        """Build one stable job identifier for a merged polling interval."""
-        return f"polling:{protocol}:{interval_ms}"
+    def _build_polling_job_id(protocol: str) -> str:
+        """Build one stable job identifier for a protocol-level polling job."""
+        return f"polling:{protocol}"
 
     @staticmethod
     def _build_subscription_job_id(protocol: str) -> str:

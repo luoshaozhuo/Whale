@@ -1,128 +1,97 @@
-"""Unit tests for the subscribe-source-state use case."""
+"""Unit tests for subscribe acquisition use case."""
 
 from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from threading import Event
 
 from whale.ingest.ports.state import ModeAwareSourceStateCachePort
-from whale.ingest.ports.source.source_acquisition_port import SourceAcquisitionPort
+from whale.ingest.ports.source.source_acquisition_port import SourceSubscriptionHandle
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
-from whale.ingest.usecases.dtos.acquisition_item_data import AcquisitionItemData
-from whale.ingest.usecases.dtos.source_acquisition_definition import (
-    SourceAcquisitionDefinition,
+from whale.ingest.usecases.dtos.acquisition_execution_options import (
+    AcquisitionExecutionOptions,
 )
+from whale.ingest.usecases.dtos.acquisition_item_data import AcquisitionItemData
 from whale.ingest.usecases.dtos.source_acquisition_request import (
     SourceAcquisitionRequest,
 )
 from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionData
-from whale.ingest.usecases.dtos.source_runtime_config_data import (
-    SourceRuntimeConfigData,
-)
-from whale.ingest.usecases.dtos.source_subscription_request import (
-    SourceSubscriptionRequest,
-)
-from whale.ingest.usecases.subscribe_source_state_usecase import (
-    SubscribeSourceStateUseCase,
+from whale.ingest.usecases.subscribe_acquisition_usecase import (
+    SubscribeAcquisitionUseCase,
 )
 
 
-class FakeAcquisitionDefinitionPort:
-    """Return acquisition definitions keyed by runtime config id."""
-
-    def __init__(self, definitions: dict[int, SourceAcquisitionDefinition]) -> None:
-        """Store the definitions available to the use case."""
-        self._definitions = dict(definitions)
-
-    def get_config(
-        self,
-        runtime_config: SourceRuntimeConfigData,
-    ) -> SourceAcquisitionDefinition:
-        """Return acquisition config for the requested runtime config."""
-        return self._definitions[runtime_config.runtime_config_id]
-
-
-class ConcurrentFakeSourceAcquisitionPort:
-    """Capture initial reads and subscription requests for startup ordering tests."""
-
+class FakeSubscriptionHandle(SourceSubscriptionHandle):
     def __init__(self) -> None:
-        """Initialize captured requests and the startup barrier."""
-        self.requests: list[SourceSubscriptionRequest] = []
-        self.read_requests: list[SourceAcquisitionRequest] = []
-        self._release = asyncio.Event()
+        self.close_calls = 0
 
-    async def read(self, request: SourceAcquisitionRequest) -> list[AcquiredNodeState]:
-        """Capture the initial full read and return one starting value."""
-        self.read_requests.append(request)
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+class FakeSourceAcquisitionPort:
+    def __init__(self) -> None:
+        self.read_calls: list[SourceConnectionData] = []
+        self.start_calls: list[SourceConnectionData] = []
+        self.handles: list[FakeSubscriptionHandle] = []
+
+    async def read(
+        self,
+        execution: object,
+        connection: SourceConnectionData,
+        items: list[AcquisitionItemData],
+    ) -> list[AcquiredNodeState]:
+        del execution, items
+        self.read_calls.append(connection)
         return [
             AcquiredNodeState(
-                source_id=request.source_id,
-                node_key=request.items[0].key,
+                source_id=connection.ld_name,
+                node_key="TotW",
                 value="41.0",
                 observed_at=datetime.now(tz=UTC),
             )
         ]
 
-    async def subscribe(self, request: SourceSubscriptionRequest) -> None:
-        """Capture the request, wait for all subscriptions, then emit one state."""
-        assert len(self.read_requests) == 2
-        self.requests.append(request)
-        if len(self.requests) >= 2:
-            self._release.set()
-
-        await asyncio.wait_for(self._release.wait(), timeout=0.2)
-        assert request.state_received is not None
-        await request.state_received(
+    async def start_subscription(
+        self,
+        execution: object,
+        connection: SourceConnectionData,
+        items: list[AcquisitionItemData],
+        *,
+        state_received: object,
+    ) -> SourceSubscriptionHandle:
+        del execution, items
+        self.start_calls.append(connection)
+        handle = FakeSubscriptionHandle()
+        self.handles.append(handle)
+        assert callable(state_received)
+        await state_received(
             [
                 AcquiredNodeState(
-                    source_id=request.source_id,
-                    node_key=request.items[0].key,
+                    source_id=connection.ld_name,
+                    node_key="TotW",
                     value="42.0",
                     observed_at=datetime.now(tz=UTC),
                 )
             ]
         )
+        return handle
 
 
 class FakeSourceAcquisitionPortRegistry:
-    """Resolve fake acquisition ports by protocol."""
+    def __init__(self, port: FakeSourceAcquisitionPort) -> None:
+        self._port = port
 
-    def __init__(self, ports_by_protocol: dict[str, SourceAcquisitionPort]) -> None:
-        """Store the fake acquisition ports."""
-        self._ports_by_protocol = dict(ports_by_protocol)
-
-    def get(self, protocol: str) -> SourceAcquisitionPort:
-        """Return the configured acquisition port."""
-        return self._ports_by_protocol[protocol]
-
-
-class FakeSourceStateCachePort:
-    """Capture latest-state refresh batches."""
-
-    def __init__(self) -> None:
-        """Initialize one empty call list."""
-        self.calls: list[tuple[str, list[AcquiredNodeState]]] = []
-
-    def store_many(
-        self,
-        model_id: str,
-        acquired_states: list[AcquiredNodeState],
-    ) -> int:
-        """Capture stored states and return the processed row count."""
-        self.calls.append((model_id, list(acquired_states)))
-        return len(acquired_states)
+    def get(self, protocol: str) -> FakeSourceAcquisitionPort:
+        assert protocol == "opcua"
+        return self._port
 
 
 class FakeModeAwareSourceStateCachePort(ModeAwareSourceStateCachePort):
-    """Capture mode-aware latest-state updates for subscription tests."""
-
     def __init__(self) -> None:
-        """Initialize one empty mode-aware call list."""
-        self.calls_by_mode: list[tuple[str, str, list[AcquiredNodeState]]] = []
+        self.calls: list[tuple[str, str, list[AcquiredNodeState]]] = []
 
     def store_many(self, model_id: str, acquired_states: list[AcquiredNodeState]) -> int:
-        """Capture default updates as ONCE mode refreshes."""
         return self.store_many_for_mode("ONCE", model_id, acquired_states)
 
     def store_many_for_mode(
@@ -131,104 +100,81 @@ class FakeModeAwareSourceStateCachePort(ModeAwareSourceStateCachePort):
         model_id: str,
         acquired_states: list[AcquiredNodeState],
     ) -> int:
-        """Capture one mode-specific state refresh batch."""
-        self.calls_by_mode.append((acquisition_mode, model_id, list(acquired_states)))
+        self.calls.append((acquisition_mode, model_id, list(acquired_states)))
         return len(acquired_states)
 
 
-def _build_runtime_config(runtime_config_id: int, source_id: str) -> SourceRuntimeConfigData:
-    """Build one subscription runtime config for tests."""
-    return SourceRuntimeConfigData(
-        runtime_config_id=runtime_config_id,
-        source_id=source_id,
-        protocol="opcua",
-        acquisition_mode="SUBSCRIPTION",
-        interval_ms=0,
-        enabled=True,
-    )
-
-
-def _build_definition(model_id: str, source_id: str) -> SourceAcquisitionDefinition:
-    """Build one acquisition definition for subscription tests."""
-    return SourceAcquisitionDefinition(
-        ld_id=model_id,
-        connection=SourceConnectionData(endpoint=f"opc.tcp://127.0.0.1/{source_id}"),
-        items=[
-            AcquisitionItemData(
-                key="TotW",
-                locator=f"ns=2;s={source_id}.TotW",
-            )
+def _build_request() -> SourceAcquisitionRequest:
+    return SourceAcquisitionRequest(
+        request_id="subscription-1",
+        task_id=101,
+        execution=AcquisitionExecutionOptions(
+            protocol="opcua",
+            transport="tcp",
+            acquisition_mode="SUBSCRIBE",
+            interval_ms=100,
+            max_iteration=None,
+            request_timeout_ms=500,
+            freshness_timeout_ms=30000,
+            alive_timeout_ms=60000,
+        ),
+        connections=[
+            SourceConnectionData(
+                host="127.0.0.1",
+                port=4840,
+                ied_name="IED_01",
+                ld_name="LD_01",
+                namespace_uri="urn:test",
+            ),
+            SourceConnectionData(
+                host="127.0.0.2",
+                port=4840,
+                ied_name="IED_02",
+                ld_name="LD_02",
+                namespace_uri="urn:test",
+            ),
         ],
+        items=[AcquisitionItemData(key="TotW", profile_item_id=1, relative_path="TotW")],
     )
 
 
-def test_execute_starts_all_source_subscriptions_and_stores_updates() -> None:
-    """Read once before subscribe, then persist both initial and incremental updates."""
-    runtime_configs = (
-        _build_runtime_config(101, "WTG_01"),
-        _build_runtime_config(102, "WTG_02"),
-    )
-    acquisition_port = ConcurrentFakeSourceAcquisitionPort()
-    state_cache_port = FakeSourceStateCachePort()
-    use_case = SubscribeSourceStateUseCase(
-        acquisition_definition_port=FakeAcquisitionDefinitionPort(
-            {
-                101: _build_definition("model_1", "WTG_01"),
-                102: _build_definition("model_2", "WTG_02"),
-            }
-        ),
-        acquisition_port_registry=FakeSourceAcquisitionPortRegistry({"opcua": acquisition_port}),
-        state_cache_port=state_cache_port,
+def test_start_creates_sessions_for_all_connections() -> None:
+    port = FakeSourceAcquisitionPort()
+    cache = FakeModeAwareSourceStateCachePort()
+    use_case = SubscribeAcquisitionUseCase(
+        acquisition_port_registry=FakeSourceAcquisitionPortRegistry(port),
+        state_cache_port=cache,
     )
 
-    asyncio.run(use_case.execute(runtime_configs=runtime_configs, stop_event=Event()))
+    sessions = asyncio.run(use_case.start(_build_request()))
 
-    assert [request.source_id for request in acquisition_port.read_requests] == [
-        "WTG_01",
-        "WTG_02",
+    assert len(sessions) == 2
+    assert [connection.ld_name for connection in port.read_calls] == ["LD_01", "LD_02"]
+    assert [connection.ld_name for connection in port.start_calls] == ["LD_01", "LD_02"]
+    assert sorted(model_id for _, model_id, _ in cache.calls) == [
+        "LD_01",
+        "LD_01",
+        "LD_02",
+        "LD_02",
     ]
-    assert [request.source_id for request in acquisition_port.requests] == ["WTG_01", "WTG_02"]
-    model_ids = [model_id for model_id, _ in state_cache_port.calls]
-    assert model_ids[:2] == ["model_1", "model_2"]
-    assert sorted(model_ids[2:]) == ["model_1", "model_2"]
-    values = [states[0].value for _, states in state_cache_port.calls]
-    assert values[:2] == ["41.0", "41.0"]
-    assert sorted(values[2:]) == ["42.0", "42.0"]
 
 
-def test_execute_routes_subscription_results_with_subscription_mode() -> None:
-    """Tag both initial and incremental subscription updates with SUBSCRIPTION mode."""
-    runtime_configs = (
-        _build_runtime_config(101, "WTG_01"),
-        _build_runtime_config(102, "WTG_02"),
+def test_execute_waits_for_stop_and_closes_sessions() -> None:
+    port = FakeSourceAcquisitionPort()
+    cache = FakeModeAwareSourceStateCachePort()
+    use_case = SubscribeAcquisitionUseCase(
+        acquisition_port_registry=FakeSourceAcquisitionPortRegistry(port),
+        state_cache_port=cache,
     )
-    acquisition_port = ConcurrentFakeSourceAcquisitionPort()
-    state_cache_port = FakeModeAwareSourceStateCachePort()
-    use_case = SubscribeSourceStateUseCase(
-        acquisition_definition_port=FakeAcquisitionDefinitionPort(
-            {
-                101: _build_definition("model_1", "WTG_01"),
-                102: _build_definition("model_2", "WTG_02"),
-            }
-        ),
-        acquisition_port_registry=FakeSourceAcquisitionPortRegistry({"opcua": acquisition_port}),
-        state_cache_port=state_cache_port,
-    )
+    stop_event = asyncio.Event()
 
-    asyncio.run(use_case.execute(runtime_configs=runtime_configs, stop_event=Event()))
+    async def _run() -> None:
+        task = asyncio.create_task(use_case.execute(_build_request(), stop_event))
+        await asyncio.sleep(0.05)
+        stop_event.set()
+        await task
 
-    modes = [mode for mode, _, _ in state_cache_port.calls_by_mode]
-    assert all(m == "SUBSCRIPTION" for m in modes)
-    assert len(modes) == 4
-    flattened_states = [states[0] for _, _, states in state_cache_port.calls_by_mode]
-    source_ids = [state.source_id for state in flattened_states]
-    assert source_ids[:2] == ["WTG_01", "WTG_02"]
-    assert sorted(source_ids[2:]) == ["WTG_01", "WTG_02"]
-    model_ids = [model_id for _, model_id, _ in state_cache_port.calls_by_mode]
-    assert model_ids[:2] == ["model_1", "model_2"]
-    assert sorted(model_ids[2:]) == ["model_1", "model_2"]
-    values = [state.value for state in flattened_states]
-    assert values[:2] == ["41.0", "41.0"]
-    assert sorted(values[2:]) == ["42.0", "42.0"]
+    asyncio.run(_run())
 
-
+    assert len(port.handles) == 2
+    assert all(handle.close_calls == 1 for handle in port.handles)

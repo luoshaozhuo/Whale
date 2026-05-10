@@ -258,24 +258,19 @@ def test_read_uses_read_attributes_in_non_fast_mode_and_keeps_metadata() -> None
 
 
 @pytest.mark.unit
-def test_subscribe_reuses_cached_nodes_for_subscription_path() -> None:
+def test_start_subscription_reuses_cached_nodes_for_subscription_path() -> None:
     async def _run() -> None:
         reader = OpcUaSourceReader(_connection())
         client = _FakeClient(_windfarm())
         reader._client = client  # noqa: SLF001
         reader._nsidx = 2  # noqa: SLF001
 
-        task = asyncio.create_task(
-            reader.subscribe(
-                ["s=WTG_01.LD0.MMXU1.TotW", "s=WTG_01.LD0.MMXU1.TotW"],
-                interval_ms=100,
-                on_data_change=lambda node, val, data: None,
-            )
+        handle = await reader.start_subscription(
+            ["s=WTG_01.LD0.MMXU1.TotW", "s=WTG_01.LD0.MMXU1.TotW"],
+            interval_ms=100,
+            on_data_change=lambda node, val, data: None,
         )
-        await asyncio.sleep(0)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        await handle.close()
 
         assert client.get_node_calls == ["ns=2;s=WTG_01.LD0.MMXU1.TotW"]
         assert client.subscription.nodes[0] is client.subscription.nodes[1]

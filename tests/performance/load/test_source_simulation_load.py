@@ -26,7 +26,6 @@ for _path in (str(_PROJECT_ROOT), str(_SRC_ROOT)):
 
 import pytest
 
-from whale.shared.scheduling import even_stagger_offset
 from whale.ingest.adapters.config.source_runtime_config_repository import (
     SourceRuntimeConfigRepository,
 )
@@ -56,7 +55,7 @@ POLL_HZ_RAMP = tuple(
 # 场景 2：固定 10Hz，全量读取，逐步增加 server 数。
 SERVER_RAMP = tuple(
     int(part.strip())
-    for part in os.environ.get("SOURCE_SIM_LOAD_SERVER_RAMP", ",".join(str(i) for i in range(1, 20, 1))).split(",")
+    for part in os.environ.get("SOURCE_SIM_LOAD_SERVER_RAMP", ",".join(str(i) for i in range(1, 21, 5))).split(",")
     if part.strip()
 )
 # 认为“达标”的最低实际频率比例。
@@ -199,11 +198,15 @@ def _start_offset_for_worker(
     if STAGGER_MODE == "none":
         return 0.0
     if STAGGER_MODE == "even":
-        return even_stagger_offset(
-            worker_index=worker_index,
-            worker_count=worker_count,
-            interval_seconds=target_interval_s,
-        )
+        if worker_count <= 0:
+            raise ValueError("worker_count must be greater than 0")
+        if worker_index < 0 or worker_index >= worker_count:
+            raise ValueError("worker_index must be in [0, worker_count)")
+        if target_interval_s < 0:
+            raise ValueError("target_interval_s must be greater than or equal to 0")
+        if worker_count == 1 or target_interval_s == 0:
+            return 0.0
+        return worker_index * target_interval_s / worker_count
     raise ValueError(f"Unsupported SOURCE_SIM_LOAD_STAGGER_MODE: {STAGGER_MODE!r}")
 
 

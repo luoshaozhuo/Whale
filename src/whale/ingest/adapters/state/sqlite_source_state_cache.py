@@ -17,12 +17,12 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import DeclarativeBase
 
 from whale.ingest.framework.persistence.session import session_scope
-from whale.ingest.ports.state import (
-    SourceStateCachePort,
+from whale.ingest.ports.state.source_state_snapshot_reader_port import (
+    CachedSourceState,
     SourceStateSnapshotReaderPort,
 )
+from whale.ingest.ports.state.source_state_cache_port import SourceStateCachePort
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
-from whale.ingest.usecases.dtos.cached_source_state import CachedSourceState
 
 
 class _CacheBase(DeclarativeBase):

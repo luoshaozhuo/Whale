@@ -26,7 +26,7 @@ from whale.shared.persistence.orm import (
 )
 from whale.shared.persistence.session import session_scope
 
-TURBINE_COUNT = 30
+TURBINE_COUNT = 10
 
 
 def generate_all_sample_data() -> None:
@@ -294,19 +294,40 @@ def _create_ieds(session: Session, turbines: list[AssetInstance],
     return ieds
 
 
-def _create_acquisition_tasks(session: Session,
-                               ld_instances: list[LDInstance]) -> list[AcquisitionTask]:
+def _create_acquisition_tasks(
+    session: Session,
+    ld_instances: list[LDInstance],
+) -> list[AcquisitionTask]:
     tasks = []
     for ld in ld_instances:
         asset = session.get(AssetInstance, ld.asset_instance_id)
-        task = AcquisitionTask(
-            task_name=f"task_{asset.asset_code}",
-            ld_instance_id=ld.ld_instance_id,
-            acquisition_mode="SUBSCRIBE",
-            poll_interval_ms=100,
-        )
-        session.add(task)
-        tasks.append(task)
+        if asset is None:
+            raise LookupError(
+                f"AssetInstance `{ld.asset_instance_id}` not found for LD `{ld.ld_name}`."
+            )
+
+    task = AcquisitionTask(
+        task_name=f"task_{asset.asset_code}",
+        ld_instance_id=ld.ld_instance_id,
+        acquisition_mode="SUBSCRIBE",
+        poll_interval_ms=100,
+        request_timeout_ms=500,
+        freshness_timeout_ms=30000,
+        alive_timeout_ms=60000,
+
+        polling_max_concurrent_connections=4,
+        polling_connection_start_interval_ms=25,
+
+        subscription_start_interval_ms=25,
+        subscription_notification_queue_size=4096,
+        subscription_notification_worker_count=2,
+        subscription_notification_max_lag_ms=200,
+
+        protocol_params={},
+    )
+    session.add(task)
+    tasks.append(task)
+
     return tasks
 
 

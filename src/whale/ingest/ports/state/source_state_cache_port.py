@@ -1,35 +1,21 @@
-"""State-cache ports for ingest latest-state refresh."""
+# src/whale/ingest/ports/state/source_state_cache_port.py
+
+"""State-cache port for ingest latest-state refresh."""
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
 
 
 class SourceStateCachePort(Protocol):
-    """Update the local latest-state cache only.
+    """Update the local latest-state cache only."""
 
-    Implementations refresh the current state view used by ingest runtime and
-    later snapshot emission. They do not publish messages downstream.
-    """
-
-    def store_many(
+    def update(
         self,
-        model_id: str,
-        acquired_states: list[AcquiredNodeState],
+        *,
+        ld_name: str,
+        states: list[AcquiredNodeState],
     ) -> int:
-        """Refresh many cached source states and return processed row count."""
-
-
-@runtime_checkable
-class ModeAwareSourceStateCachePort(SourceStateCachePort, Protocol):
-    """Optional cache extension that also records acquisition mode metadata."""
-
-    def store_many_for_mode(
-        self,
-        acquisition_mode: str,
-        model_id: str,
-        acquired_states: list[AcquiredNodeState],
-    ) -> int:
-        """Refresh many cached states tagged with their acquisition mode."""
+        """Refresh cached source states for one logical device."""

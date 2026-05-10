@@ -95,38 +95,35 @@ def _run_simulator_process(
     ready_event: synchronize.Event,
     error_queue: queues.Queue[str],
 ) -> None:
-    simulator = None
     try:
-        simulator = build_simulator(source)
-        simulator.start()
+        with build_simulator(source) as simulator:
+            # 一个 source 对应一个独立子进程，尽量贴近真实“一个设备一个 server”。
+            ready_event.set()
 
-        # 一个 source 对应一个独立子进程，尽量贴近真实“一个设备一个 server”。
-        ready_event.set()
+            # 周期写入放在子进程内部完成，主进程只负责生命周期，不再跨进程持有 simulator。
+            update_points = _select_points_for_update(source.points, update_config)
+            rng = random.Random(
+                f"{source.connection.name}:{source.connection.host}:{source.connection.port}"
+            )
+            next_update_at = time.monotonic() + update_config.interval_seconds
 
-        # 周期写入放在子进程内部完成，主进程只负责生命周期，不再跨进程持有 simulator。
-        update_points = _select_points_for_update(source.points, update_config)
-        rng = random.Random(
-            f"{source.connection.name}:{source.connection.host}:{source.connection.port}"
-        )
-        next_update_at = time.monotonic() + update_config.interval_seconds
+            while not stop_event.is_set():
+                if not update_config.enabled:
+                    stop_event.wait(0.1)
+                    continue
 
-        while not stop_event.is_set():
-            if not update_config.enabled:
-                stop_event.wait(0.1)
-                continue
+                now = time.monotonic()
+                if now >= next_update_at:
+                    writes = _build_update_writes(update_points, rng)
+                    if writes:
+                        simulator.writes(writes)
 
-            now = time.monotonic()
-            if now >= next_update_at:
-                writes = _build_update_writes(update_points, rng)
-                if writes:
-                    simulator.writes(writes)
-
-                next_update_at += update_config.interval_seconds
-                while next_update_at <= now:
                     next_update_at += update_config.interval_seconds
+                    while next_update_at <= now:
+                        next_update_at += update_config.interval_seconds
 
-            wait_seconds = min(0.05, max(0.0, next_update_at - time.monotonic()))
-            stop_event.wait(wait_seconds)
+                wait_seconds = min(0.05, max(0.0, next_update_at - time.monotonic()))
+                stop_event.wait(wait_seconds)
     except Exception as exc:
         error_queue.put(
             (
@@ -135,9 +132,6 @@ def _run_simulator_process(
                 f"{traceback.format_exc()}"
             )
         )
-    finally:
-        if simulator is not None:
-            simulator.stop()
 
 
 @dataclass
@@ -196,14 +190,15 @@ class SourceSimulatorFleet:
             self._close_error_queue()
             return
 
-        # 先通知所有子进程自行收尾，给正常 stop 一个优先机会。
+        # 1. 先请求子进程正常退出。
         for stop_event in self._stop_events:
             stop_event.set()
 
+        # 2. 给子进程一次正常退出机会。
         for process in self._processes:
             process.join(timeout=self.join_timeout_seconds)
 
-        # 如果子进程没有按时退出，再逐级升级到 terminate / kill，避免测试后残留端口。
+        # 3. 仍未退出则 terminate。
         for process in self._processes:
             if process.is_alive():
                 process.terminate()
@@ -211,17 +206,32 @@ class SourceSimulatorFleet:
         for process in self._processes:
             process.join(timeout=self.join_timeout_seconds)
 
+        # 4. 仍未退出则 kill。
         for process in self._processes:
             if process.is_alive():
                 process.kill()
 
         for process in self._processes:
-            process.join()
+            process.join(timeout=self.join_timeout_seconds)
+
+        alive_processes = []
+        # 5. 释放 process handle。
+        for process in self._processes:
+            if process.is_alive():
+                alive_processes.append(process.name)
+                continue
+            process.close()
 
         self._processes.clear()
         self._stop_events.clear()
         self._ready_events.clear()
         self._close_error_queue()
+
+        if alive_processes:
+            raise RuntimeError(
+                "Failed to stop simulator process(es): "
+                + ", ".join(alive_processes)
+            )
 
     def __enter__(self) -> "SourceSimulatorFleet":
         return self.start()

@@ -1,192 +1,294 @@
-"""OPC UA acquisition adapter — resolves endpoint and node IDs internally."""
+"""OPC UA acquisition adapter。
+
+这个 adapter 只负责两件事：
+- 把 ingest 侧请求 DTO 翻译成共享 reader 可识别的连接和节点参数
+- 把共享 reader 返回的数据翻译回 ingest 侧 `AcquiredNodeState`
+
+它不做：
+- 周期控制
+- 状态缓存写入
+- diagnostics 记录
+- 业务模式判断
+"""
 
 from __future__ import annotations
 
-import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
 
-from asyncua import Client  # type: ignore[import-untyped]
-
-from whale.ingest.ports.source.source_acquisition_port import SourceAcquisitionPort
-from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
-from whale.ingest.usecases.dtos.source_acquisition_request import (
-    SourceAcquisitionRequest,
-)
-from whale.ingest.usecases.dtos.source_subscription_request import (
-    SourceSubscriptionRequest,
+from whale.ingest.ports.source.source_acquisition_port import (
+    SourceAcquisitionPort,
+    SourceSubscriptionHandle,
     SubscriptionStateHandler,
 )
+from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
+from whale.ingest.usecases.dtos.source_acquisition_request import (
+    AcquisitionExecutionOptions,
+    AcquisitionItemData,
+)
+from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionData
+from whale.shared.source.source_reader import (
+    OpcUaSourceReader,
+    SourceConnectionProfile,
+    SourceReadPoint,
+)
+
+
+@dataclass(slots=True)
+class OpcUaAdapterSubscriptionHandle:
+    """Adapter 层订阅句柄。
+
+    这个句柄同时持有：
+    - 已经连上的 reader
+    - 底层 OPC UA subscription handle
+
+    关闭顺序必须是：
+    1. 先关 subscription
+    2. 再退出 reader 上下文，断开 client
+    """
+
+    reader: OpcUaSourceReader
+    subscription_handle: SourceSubscriptionHandle
+    closed: bool = False
+
+    async def close(self) -> None:
+        if self.closed:
+            return
+
+        self.closed = True
+        try:
+            await self.subscription_handle.close()
+        finally:
+            await self.reader.__aexit__(None, None, None)
+
+
+@dataclass(slots=True)
+class _NoopSubscriptionHandle:
+    """空点位订阅时返回的空句柄。"""
+
+    closed: bool = False
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 class OpcUaSourceAcquisitionAdapter(SourceAcquisitionPort):
-    """Execute OPC UA read / subscribe.
+    """执行 OPC UA read / subscribe。"""
 
-    Accepts pre-resolved *resolved_endpoint* / *resolved_node_ids* when
-    available.  When they are missing the adapter resolves them from the
-    generic request DTOs — callers do not need to know OPC UA details.
-    """
-
-    # ── Public interface ────────────────────────────────────────────
-
-    async def read(self, request: SourceAcquisitionRequest) -> list[AcquiredNodeState]:
+    async def read(
+        self,
+        execution: AcquisitionExecutionOptions,
+        connection: SourceConnectionData,
+        items: list[AcquisitionItemData],
+    ) -> list[AcquiredNodeState]:
         observed_at = datetime.now(tz=UTC)
-        endpoint = self._resolve_endpoint(request)
-        if not endpoint:
-            raise ValueError("Cannot resolve OPC UA endpoint.")
+        node_paths = self._resolve_node_paths(connection, items)
 
-        node_ids = self._resolve_node_ids(request)
-        if not node_ids:
-            raise ValueError("Cannot resolve OPC UA node IDs.")
-
-        timeout_s = request.request_timeout_ms / 1000
-        async with Client(endpoint, timeout=timeout_s) as client:
-            nodes = [client.get_node(nid) for nid in node_ids]
-            values = await client.read_values(nodes)
+        async with OpcUaSourceReader(
+            self._build_connection_profile(execution, connection)
+        ) as reader:
+            values = await reader.read(node_paths, fast_mode=True)
 
         return [
-            AcquiredNodeState(
-                source_id=request.source_id,
-                node_key=item.key,
-                value=str(value),
+            self._to_acquired_state_from_read_point(
+                connection=connection,
+                item=item,
+                point=point,
                 observed_at=observed_at,
             )
-            for item, value in zip(request.items, values, strict=True)
+            for item, point in zip(items, values, strict=True)
         ]
 
-    async def subscribe(self, request: SourceSubscriptionRequest) -> None:
-        if request.stop_requested is None:
-            raise ValueError("Subscription request must provide a stop callback.")
-        if request.state_received is None:
-            raise ValueError("Subscription request must provide a state callback.")
-
-        if not request.items:
-            while not request.stop_requested():
-                await asyncio.sleep(0.1)
-            return
-
-        endpoint = self._resolve_endpoint(request)
-        if not endpoint:
-            raise ValueError("Cannot resolve OPC UA endpoint.")
-
-        node_ids = self._resolve_node_ids(request)
-        if not node_ids:
-            raise ValueError("Cannot resolve OPC UA node IDs.")
-
-        async with Client(endpoint, timeout=10) as client:
-            nodes = [client.get_node(node_id) for node_id in node_ids]
-            handler = _OpcUaSubscriptionHandler(
-                source_id=request.source_id,
-                node_keys_by_node_id={
-                    node_id: item.key
-                    for item, node_id in zip(request.items, node_ids, strict=True)
-                },
-                state_received=request.state_received,
-            )
-            subscription = await client.create_subscription(100, handler)
-            handles: list[int] = []
-            for node in nodes:
-                handles.extend(
-                    self._normalize_subscription_handles(
-                        await subscription.subscribe_data_change(node)
-                    )
-                )
-
-            try:
-                while not request.stop_requested():
-                    await asyncio.sleep(0.1)
-            finally:
-                for handle in handles:
-                    await subscription.unsubscribe(handle)
-                await subscription.delete()
-
-    # ── Endpoint resolution ─────────────────────────────────────────
-
-    @staticmethod
-    def _resolve_endpoint(request: SourceAcquisitionRequest | SourceSubscriptionRequest) -> str:
-        if request.resolved_endpoint:
-            return request.resolved_endpoint
-        if request.connection.endpoint:
-            return request.connection.endpoint
-        return ""
-
-    # ── Node ID resolution ──────────────────────────────────────────
-
-    @staticmethod
-    def _resolve_node_ids(request: SourceAcquisitionRequest | SourceSubscriptionRequest) -> list[str]:
-        if request.resolved_node_ids:
-            return list(request.resolved_node_ids)
-
-        ns_uri_raw = request.connection.params.get("namespace_uri")
-        ns_uri = ns_uri_raw.strip() if isinstance(ns_uri_raw, str) and ns_uri_raw.strip() else ""
-
-        node_ids: list[str] = []
-        for item in request.items:
-            if item.locator.startswith("ns=") or item.locator.startswith("nsu="):
-                node_ids.append(item.locator)
-            else:
-                node_ids.append(f"nsu={ns_uri};s={item.locator}" if ns_uri else f"s={item.locator}")
-        return node_ids
-
-    # ── Helpers ─────────────────────────────────────────────────────
-
-    @staticmethod
-    def _normalize_subscription_handles(handles: Any) -> list[int]:
-        if isinstance(handles, list):
-            return [handle for handle in handles if isinstance(handle, int)]
-        if isinstance(handles, int):
-            return [handles]
-        return []
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Subscription handler
-# ═══════════════════════════════════════════════════════════════════════
-
-class _OpcUaSubscriptionHandler:
-    """Translate OPC UA data-change notifications into acquired node states."""
-
-    def __init__(
+    async def start_subscription(
         self,
+        execution: AcquisitionExecutionOptions,
+        connection: SourceConnectionData,
+        items: list[AcquisitionItemData],
         *,
-        source_id: str,
-        node_keys_by_node_id: dict[str, str],
         state_received: SubscriptionStateHandler,
-    ) -> None:
-        self._source_id = source_id
-        self._node_keys_by_node_id = dict(node_keys_by_node_id)
-        self._state_received = state_received
+    ) -> SourceSubscriptionHandle:
+        if not items:
+            return _NoopSubscriptionHandle()
 
-    async def datachange_notification(self, node: object, val: object, data: object) -> None:
-        node_id = self._resolve_node_id(node)
-        node_key = self._node_keys_by_node_id.get(node_id)
-        if node_key is None:
-            return
-        await self._state_received(
-            [
-                AcquiredNodeState(
-                    source_id=self._source_id,
-                    node_key=node_key,
-                    value=str(val),
-                    observed_at=self._resolve_observed_at(data),
-                )
-            ]
+        reader = OpcUaSourceReader(self._build_connection_profile(execution, connection))
+        await reader.__aenter__()
+
+        node_paths = self._resolve_node_paths(connection, items)
+        items_by_node_path = {
+            node_path: item for item, node_path in zip(items, node_paths, strict=True)
+        }
+
+        async def _on_data_change(node: object, val: object, data: object) -> None:
+            state = self._to_acquired_state_from_data_change(
+                connection=connection,
+                node=node,
+                value=val,
+                data=data,
+                items_by_node_path=items_by_node_path,
+            )
+            if state is None:
+                return
+
+            await state_received([state])
+
+        try:
+            subscription_handle = await reader.start_subscription(
+                node_paths,
+                interval_ms=execution.interval_ms,
+                on_data_change=_on_data_change,
+            )
+        except Exception:
+            await reader.__aexit__(None, None, None)
+            raise
+
+        return OpcUaAdapterSubscriptionHandle(
+            reader=reader,
+            subscription_handle=subscription_handle,
         )
 
     @staticmethod
-    def _resolve_node_id(node: object) -> str:
-        node_id = getattr(node, "nodeid", node)
-        return str(node_id)
+    def _resolve_node_paths(
+        connection: SourceConnectionData,
+        items: list[AcquisitionItemData],
+    ) -> list[str]:
+        namespace_uri = connection.namespace_uri.strip() if connection.namespace_uri else ""
+        node_paths: list[str] = []
+
+        for item in items:
+            relative_path = item.relative_path.strip()
+            if relative_path.startswith(("ns=", "nsu=")):
+                node_paths.append(relative_path)
+                continue
+
+            if namespace_uri:
+                node_paths.append(f"nsu={namespace_uri};s={relative_path}")
+            else:
+                node_paths.append(f"s={relative_path}")
+
+        if not node_paths:
+            raise ValueError("Cannot resolve OPC UA node paths.")
+
+        return node_paths
 
     @staticmethod
-    def _resolve_observed_at(data: object) -> datetime:
-        monitored_item = getattr(data, "monitored_item", None)
-        value = getattr(monitored_item, "Value", None)
-        source_timestamp = getattr(value, "SourceTimestamp", None)
-        if isinstance(source_timestamp, datetime):
-            return (
-                source_timestamp.replace(tzinfo=UTC)
-                if source_timestamp.tzinfo is None
-                else source_timestamp.astimezone(UTC)
-            )
-        return datetime.now(tz=UTC)
+    def _resolve_node_ids(
+        connection: SourceConnectionData,
+        items: list[AcquisitionItemData],
+    ) -> list[str]:
+        """兼容旧测试中的命名。
+
+        对 OPC UA 来说，这里返回的其实是可直接传给 client.get_node(...)
+        的节点路径表达式，因此统一复用 `_resolve_node_paths()`。
+        """
+
+        return OpcUaSourceAcquisitionAdapter._resolve_node_paths(connection, items)
+
+    @staticmethod
+    def _build_connection_profile(
+        execution: AcquisitionExecutionOptions,
+        connection: SourceConnectionData,
+    ) -> SourceConnectionProfile:
+        endpoint = _build_endpoint(execution, connection)
+        if not endpoint:
+            raise ValueError("Cannot resolve OPC UA endpoint.")
+
+        return SourceConnectionProfile(
+            endpoint=endpoint,
+            namespace_uri=_resolve_namespace_uri(connection),
+            timeout_seconds=execution.request_timeout_ms / 1000,
+            params={
+                "subscription_notification_queue_size": (
+                    execution.subscription_notification_queue_size
+                ),
+                "subscription_notification_worker_count": (
+                    execution.subscription_notification_worker_count
+                ),
+                "subscription_notification_max_lag_ms": (
+                    execution.subscription_notification_max_lag_ms
+                ),
+            },
+        )
+
+    @staticmethod
+    def _to_acquired_state_from_read_point(
+        *,
+        connection: SourceConnectionData,
+        item: AcquisitionItemData,
+        point: SourceReadPoint,
+        observed_at: datetime,
+    ) -> AcquiredNodeState:
+        return AcquiredNodeState(
+            source_id=_resolve_source_id(connection),
+            node_key=item.key,
+            value=str(point.value),
+            observed_at=point.source_timestamp or observed_at,
+        )
+
+    @staticmethod
+    def _to_acquired_state_from_data_change(
+        *,
+        connection: SourceConnectionData,
+        node: object,
+        value: object,
+        data: object,
+        items_by_node_path: dict[str, AcquisitionItemData],
+    ) -> AcquiredNodeState | None:
+        node_path = _resolve_node_path(node)
+        item = items_by_node_path.get(node_path)
+        if item is None:
+            return None
+
+        return AcquiredNodeState(
+            source_id=_resolve_source_id(connection),
+            node_key=item.key,
+            value=str(value),
+            observed_at=_resolve_observed_at(data),
+        )
+
+
+def _resolve_namespace_uri(connection: SourceConnectionData) -> str | None:
+    if connection.namespace_uri.strip():
+        return connection.namespace_uri.strip()
+    return None
+
+
+def _build_endpoint(
+    execution: AcquisitionExecutionOptions,
+    connection: SourceConnectionData,
+) -> str:
+    protocol = execution.protocol.strip().lower()
+    transport = execution.transport.strip().lower()
+    host = connection.host.strip()
+    port = connection.port
+
+    if not protocol or not transport or not host:
+        return ""
+
+    return f"{protocol}.{transport}://{host}:{port}"
+
+
+def _resolve_source_id(connection: SourceConnectionData) -> str:
+    if connection.ld_name.strip():
+        return connection.ld_name.strip()
+    if connection.ied_name.strip():
+        return connection.ied_name.strip()
+    return "unknown_source"
+
+
+def _resolve_node_path(node: object) -> str:
+    node_id = getattr(node, "nodeid", node)
+    if hasattr(node_id, "to_string"):
+        return str(node_id.to_string())
+    return str(node_id)
+
+
+def _resolve_observed_at(data: object) -> datetime:
+    monitored_item = getattr(data, "monitored_item", None)
+    value = getattr(monitored_item, "Value", None)
+    source_timestamp = getattr(value, "SourceTimestamp", None)
+    if isinstance(source_timestamp, datetime):
+        if source_timestamp.tzinfo is None:
+            return source_timestamp.replace(tzinfo=UTC)
+        return source_timestamp.astimezone(UTC)
+
+    return datetime.now(tz=UTC)

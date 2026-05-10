@@ -6,9 +6,11 @@ from datetime import UTC, datetime
 from typing import Protocol, cast
 
 from whale.ingest.ports.message import MessagePublisherPort
+from whale.ingest.ports.message.message_publisher_port import (
+    MessagePublishResult,
+    StateSnapshotMessage,
+)
 from whale.ingest.runtime.message_pipeline_settings import KafkaMessageSettings
-from whale.ingest.usecases.dtos.message_publish_result import MessagePublishResult
-from whale.ingest.usecases.dtos.state_snapshot_message import StateSnapshotMessage
 
 
 class KafkaSendFuture(Protocol):

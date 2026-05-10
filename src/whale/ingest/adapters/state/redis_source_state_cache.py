@@ -9,12 +9,12 @@ from datetime import UTC, datetime
 from typing import Protocol, cast
 
 from whale.ingest.config import CONFIG, RedisStateCacheConfig
-from whale.ingest.ports.state import (
-    SourceStateCachePort,
+from whale.ingest.ports.state.source_state_snapshot_reader_port import (
+    CachedSourceState,
     SourceStateSnapshotReaderPort,
 )
+from whale.ingest.ports.state.source_state_cache_port import SourceStateCachePort
 from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
-from whale.ingest.usecases.dtos.cached_source_state import CachedSourceState
 
 
 class RedisHashClient(Protocol):

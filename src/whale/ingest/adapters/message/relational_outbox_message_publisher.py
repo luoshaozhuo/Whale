@@ -8,8 +8,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from whale.ingest.ports.message import MessagePublisherPort
-from whale.ingest.usecases.dtos.message_publish_result import MessagePublishResult
-from whale.ingest.usecases.dtos.state_snapshot_message import StateSnapshotMessage
+from whale.ingest.ports.message.message_publisher_port import (
+    MessagePublishResult,
+    StateSnapshotMessage,
+)
 
 
 class RelationalOutboxMessagePublisher(MessagePublisherPort):

@@ -43,14 +43,6 @@ pytest -x                               # stop on first failure
 pytest tests/unit/ingest/test_scheduler.py::TestSourceScheduler::test_reload_clears_previous_jobs
 ```
 
-### Local dev infrastructure
-
-```bash
-docker compose -f docker-compose.ingest-dev.yaml up -d    # start PG + Redis + Kafka
-docker compose -f docker-compose.ingest-dev.yaml down      # stop
-bash scripts/run_ingest_dev.sh                             # full dev loop (infra + init + ingest)
-```
-
 ### Ingest runtime
 
 ```bash
@@ -62,6 +54,28 @@ PYTHONPATH=src python -m whale.ingest
 
 ```bash
 PYTHONPATH=src python -m whale.ingest.framework.persistence.init_db --sample-data --non-interactive
+```
+
+### Environment setup
+
+```bash
+# Copy env template and edit as needed
+cp .env.ingest.example .env.ingest.local
+# Then source before running ingest
+set -a; source .env.ingest.local; set +a
+```
+
+### Local dev infrastructure (Docker)
+
+```bash
+# Start PostgreSQL + Redis + Kafka
+docker compose -f docker-compose.ingest-dev.yaml up -d
+
+# Stop
+docker compose -f docker-compose.ingest-dev.yaml down
+
+# Full dev loop: recreate infra → init DB with sample data → start ingest
+bash scripts/run_ingest_dev.sh
 ```
 
 ---

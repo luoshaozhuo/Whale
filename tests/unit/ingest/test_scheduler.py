@@ -10,10 +10,11 @@ from whale.ingest.runtime.job_status import JobStatus
 from whale.ingest.runtime.scheduler import SourceScheduler
 from whale.ingest.runtime.scheduler_settings import SchedulerSettings
 from whale.ingest.usecases.build_runtime_plan_usecase import RuntimePlanBuildUseCase
-from whale.ingest.usecases.dtos.acquisition_status import AcquisitionStatus
-from whale.ingest.usecases.dtos.source_acquisition_execution_plan import (
-    SourceAcquisitionExecutionPlan,
+from whale.ingest.usecases.dtos.acquisition_execution_options import (
+    AcquisitionExecutionOptions,
 )
+from whale.ingest.usecases.dtos.acquisition_status import AcquisitionStatus
+from whale.ingest.usecases.dtos.source_acquisition_request import SourceAcquisitionRequest
 from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionData
 from whale.ingest.usecases.dtos.source_runtime_config_data import (
     SourceRuntimeConfigData,
@@ -21,17 +22,13 @@ from whale.ingest.usecases.dtos.source_runtime_config_data import (
 from whale.ingest.usecases.dtos.source_state_acquisition_result import (
     SourceStateAcquisitionResult,
 )
-from whale.ingest.usecases.execute_source_acquisition_usecase import (
-    ExecuteSourceAcquisitionUseCase,
-)
-from whale.ingest.usecases.subscribe_source_state_usecase import (
-    SubscribeSourceStateUseCase,
+from whale.ingest.usecases.polling_acquisition_usecase import PollingAcquisitionUseCase
+from whale.ingest.usecases.subscribe_acquisition_usecase import (
+    SubscribeAcquisitionUseCase,
 )
 
 
 class FakeRuntimeConfigPort:
-    """Fake runtime-config port that returns one fixed config list."""
-
     def __init__(self, configs: list[SourceRuntimeConfigData]) -> None:
         self._configs = list(configs)
 
@@ -40,74 +37,84 @@ class FakeRuntimeConfigPort:
 
 
 class FakePlanBuildUseCase:
-    """Fake plan-build use case that captures configs and returns simple plans."""
-
     def __init__(self) -> None:
         self.captured_configs: list[list[SourceRuntimeConfigData]] = []
 
-    def build_plans(self, configs: list[SourceRuntimeConfigData]) -> list[SourceAcquisitionExecutionPlan]:
+    def build_requests(self, configs: list[SourceRuntimeConfigData]) -> list[SourceAcquisitionRequest]:
         self.captured_configs.append(list(configs))
         return [
-            SourceAcquisitionExecutionPlan(
-                plan_id=f"plan-{cfg.runtime_config_id}",
+            SourceAcquisitionRequest(
+                request_id=f"task-{cfg.runtime_config_id}",
                 task_id=cfg.runtime_config_id,
-                ld_instance_id=0,
-                acquisition_mode=cfg.acquisition_mode,
-                protocol=cfg.protocol,
-                endpoint_config=SourceConnectionData(endpoint="opc.tcp://127.0.0.1:4840"),
-                request_items=[],
-                request_timeout_ms=500,
-                freshness_timeout_ms=30000,
-                alive_timeout_ms=60000,
+                execution=AcquisitionExecutionOptions(
+                    protocol=cfg.protocol,
+                    transport="tcp",
+                    acquisition_mode=cfg.acquisition_mode,
+                    interval_ms=cfg.interval_ms,
+                    max_iteration=None,
+                    request_timeout_ms=500,
+                    freshness_timeout_ms=30000,
+                    alive_timeout_ms=60000,
+                ),
+                connections=[
+                    SourceConnectionData(
+                        host="127.0.0.1",
+                        port=4840,
+                        ied_name=f"IED_{cfg.source_id}",
+                        ld_name=cfg.source_id,
+                        namespace_uri="urn:windfarm:2wtg",
+                    )
+                ],
+                items=[],
             )
             for cfg in configs
         ]
 
-    def build_plans_from_enabled(self) -> list[SourceAcquisitionExecutionPlan]:
-        return []
 
-
-class FakeExecuteSourceAcquisitionUseCase:
-    """Fake use case that captures plan dispatch calls."""
-
+class FakePollingAcquisitionUseCase:
     def __init__(
         self,
         status: AcquisitionStatus = AcquisitionStatus.SUCCEEDED,
     ) -> None:
         self._status = status
-        self.plan_batches: list[list[SourceAcquisitionExecutionPlan]] = []
+        self.request_batches: list[SourceAcquisitionRequest] = []
 
-    async def execute(
+    async def execute_once(
         self,
-        plans: list[SourceAcquisitionExecutionPlan],
+        request: SourceAcquisitionRequest,
     ) -> list[SourceStateAcquisitionResult]:
-        self.plan_batches.append(list(plans))
+        self.request_batches.append(request)
         return [
             SourceStateAcquisitionResult(
-                plan_id=plan.plan_id,
-                task_id=plan.task_id,
-                ld_instance_id=plan.ld_instance_id,
+                plan_id=request.request_id,
+                task_id=request.task_id,
+                ld_instance_id=0,
                 status=self._status,
                 started_at=(now := datetime.now(tz=UTC)),
                 ended_at=now,
                 error_message=None if self._status is not AcquisitionStatus.FAILED else "boom",
             )
-            for plan in plans
         ]
-
-
-class FakeSubscribeSourceStateUseCase:
-    """Fake subscription use case that captures merged subscription calls."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[tuple[SourceRuntimeConfigData, ...], object]] = []
 
     async def execute(
         self,
-        runtime_configs: tuple[SourceRuntimeConfigData, ...],
+        request: SourceAcquisitionRequest,
         stop_event: object,
     ) -> None:
-        self.calls.append((runtime_configs, stop_event))
+        self.request_batches.append(request)
+        getattr(stop_event, "set", lambda: None)()
+
+
+class FakeSubscribeAcquisitionUseCase:
+    def __init__(self) -> None:
+        self.calls: list[tuple[SourceAcquisitionRequest, object]] = []
+
+    async def execute(
+        self,
+        request: SourceAcquisitionRequest,
+        stop_event: object,
+    ) -> None:
+        self.calls.append((request, stop_event))
 
 
 def _build_runtime_config(
@@ -130,30 +137,29 @@ def _build_runtime_config(
 def _build_scheduler(
     runtime_configs: list[SourceRuntimeConfigData],
     *,
-    use_case: FakeExecuteSourceAcquisitionUseCase | None = None,
-    sub_use_case: FakeSubscribeSourceStateUseCase | None = None,
+    use_case: FakePollingAcquisitionUseCase | None = None,
+    sub_use_case: FakeSubscribeAcquisitionUseCase | None = None,
     plan_build: FakePlanBuildUseCase | None = None,
 ) -> SourceScheduler:
-    uc = use_case or FakeExecuteSourceAcquisitionUseCase()
-    sub = sub_use_case or FakeSubscribeSourceStateUseCase()
+    uc = use_case or FakePollingAcquisitionUseCase()
+    sub = sub_use_case or FakeSubscribeAcquisitionUseCase()
     pb = plan_build or FakePlanBuildUseCase()
     return SourceScheduler(
         runtime_config_port=FakeRuntimeConfigPort(runtime_configs),
         plan_build_usecase=cast(RuntimePlanBuildUseCase, pb),
-        execute_source_acquisition_usecase_factory=lambda: cast(ExecuteSourceAcquisitionUseCase, uc),
-        subscribe_source_state_usecase_factory=lambda: cast(SubscribeSourceStateUseCase, sub),
+        polling_acquisition_usecase_factory=lambda: cast(PollingAcquisitionUseCase, uc),
+        subscribe_acquisition_usecase_factory=lambda: cast(SubscribeAcquisitionUseCase, sub),
         settings=SchedulerSettings(scheduler_type="background"),
     )
 
 
-def _get_start_callable(scheduler: SourceScheduler) -> Callable[[SourceRuntimeConfigData], None]:
+def _get_start_callable(scheduler: SourceScheduler) -> Callable[..., None]:
     jobs = scheduler._scheduler.get_jobs()  # noqa: SLF001
     assert len(jobs) == 1
-    return cast(Callable[[SourceRuntimeConfigData], None], jobs[0].func)
+    return cast(Callable[..., None], jobs[0].func)
 
 
 def test_reload_registers_runtime_job_with_runtime_config() -> None:
-    """Keep the runtime config in runtime job state."""
     runtime_config = _build_runtime_config(101)
     scheduler = _build_scheduler([runtime_config])
 
@@ -166,11 +172,10 @@ def test_reload_registers_runtime_job_with_runtime_config() -> None:
     assert runtime_jobs[0].status is JobStatus.SCHEDULED
 
 
-def test_run_once_job_passes_plans_to_use_case() -> None:
-    """Build plans from runtime config and dispatch to execute use case."""
+def test_run_once_job_passes_requests_to_use_case() -> None:
     runtime_config = _build_runtime_config(101)
     pb = FakePlanBuildUseCase()
-    use_case = FakeExecuteSourceAcquisitionUseCase()
+    use_case = FakePollingAcquisitionUseCase()
     scheduler = _build_scheduler([runtime_config], use_case=use_case, plan_build=pb)
     scheduler.reload()
 
@@ -179,19 +184,17 @@ def test_run_once_job_passes_plans_to_use_case() -> None:
 
     assert runtime_job.status is JobStatus.SCHEDULED
 
-    job_func(
-        cast(SourceRuntimeConfigData, scheduler._scheduler.get_jobs()[0].args[0])
-    )  # noqa: SLF001
+    job_func(cast(SourceRuntimeConfigData, scheduler._scheduler.get_jobs()[0].args[0]))  # noqa: SLF001
 
     assert runtime_job.status is JobStatus.RUNNING
     assert pb.captured_configs == [[runtime_config]]
-    assert len(use_case.plan_batches) == 1
+    assert len(use_case.request_batches) == 1
+    assert use_case.request_batches[0].execution.max_iteration == 1
 
 
 def test_run_once_job_marks_failed_result_as_failed_job() -> None:
-    """Treat business FAILED results as failed scheduler jobs."""
     runtime_config = _build_runtime_config(101)
-    use_case = FakeExecuteSourceAcquisitionUseCase(status=AcquisitionStatus.FAILED)
+    use_case = FakePollingAcquisitionUseCase(status=AcquisitionStatus.FAILED)
     scheduler = _build_scheduler([runtime_config], use_case=use_case)
     scheduler.reload()
 
@@ -207,9 +210,8 @@ def test_run_once_job_marks_failed_result_as_failed_job() -> None:
 
 
 def test_run_once_job_keeps_empty_result_non_failed() -> None:
-    """Treat EMPTY as one non-failing business outcome."""
     runtime_config = _build_runtime_config(101)
-    use_case = FakeExecuteSourceAcquisitionUseCase(status=AcquisitionStatus.EMPTY)
+    use_case = FakePollingAcquisitionUseCase(status=AcquisitionStatus.EMPTY)
     scheduler = _build_scheduler([runtime_config], use_case=use_case)
     scheduler.reload()
 
@@ -226,9 +228,8 @@ def test_run_once_job_keeps_empty_result_non_failed() -> None:
 
 
 def test_run_once_job_keeps_disabled_result_non_failed() -> None:
-    """Treat DISABLED as one non-failing business outcome."""
     runtime_config = _build_runtime_config(101)
-    use_case = FakeExecuteSourceAcquisitionUseCase(status=AcquisitionStatus.DISABLED)
+    use_case = FakePollingAcquisitionUseCase(status=AcquisitionStatus.DISABLED)
     scheduler = _build_scheduler([runtime_config], use_case=use_case)
     scheduler.reload()
 
@@ -244,22 +245,20 @@ def test_run_once_job_keeps_disabled_result_non_failed() -> None:
     assert scheduler.has_failures() is False
 
 
-def test_reload_merges_polling_jobs_by_interval() -> None:
-    """Register one APScheduler polling job per shared interval."""
+def test_reload_merges_polling_jobs_by_protocol() -> None:
     first = _build_runtime_config(101, acquisition_mode="POLLING", interval_ms=1000)
-    second = _build_runtime_config(102, acquisition_mode="POLLING", interval_ms=1000)
+    second = _build_runtime_config(102, acquisition_mode="POLLING", interval_ms=2000)
     scheduler = _build_scheduler([first, second])
 
     scheduler.reload()
 
     runtime_jobs = scheduler.get_runtime_jobs()
     assert len(runtime_jobs) == 1
-    assert runtime_jobs[0].aps_job_id == "polling:opcua:1000"
+    assert runtime_jobs[0].aps_job_id == "polling:opcua"
     assert runtime_jobs[0].runtime_configs == (first, second)
 
 
 def test_reload_splits_polling_jobs_by_protocol() -> None:
-    """Do not merge polling configs from different protocols."""
     opcua_config = _build_runtime_config(101, acquisition_mode="POLLING", interval_ms=1000)
     modbus_config = _build_runtime_config(
         102,
@@ -272,34 +271,34 @@ def test_reload_splits_polling_jobs_by_protocol() -> None:
     scheduler.reload()
 
     assert {job.aps_job_id for job in scheduler.get_runtime_jobs()} == {
-        "polling:modbus:1000",
-        "polling:opcua:1000",
+        "polling:modbus",
+        "polling:opcua",
     }
 
 
-def test_polling_job_executes_merged_batch_with_one_use_case() -> None:
-    """Dispatch same-interval polling configs as one plan batch."""
+def test_polling_job_dispatches_request_batch_with_one_use_case() -> None:
     first = _build_runtime_config(101, acquisition_mode="POLLING", interval_ms=1000)
     second = _build_runtime_config(102, acquisition_mode="POLLING", interval_ms=1000)
     pb = FakePlanBuildUseCase()
-    use_case = FakeExecuteSourceAcquisitionUseCase()
+    use_case = FakePollingAcquisitionUseCase()
     scheduler = _build_scheduler([first, second], use_case=use_case, plan_build=pb)
     scheduler.reload()
 
     job = scheduler._scheduler.get_jobs()[0]  # noqa: SLF001
-    cast(Callable[[tuple[SourceRuntimeConfigData, ...]], None], job.func)(
-        cast(tuple[SourceRuntimeConfigData, ...], job.args[0])
+    cast(Callable[[tuple[SourceRuntimeConfigData, ...], object], None], job.func)(
+        cast(tuple[SourceRuntimeConfigData, ...], job.args[0]),
+        job.args[1],
     )
 
     assert pb.captured_configs == [[first, second]]
-    assert len(use_case.plan_batches) == 1
+    assert len(use_case.request_batches) == 2
+    assert [request.task_id for request in use_case.request_batches] == [101, 102]
 
 
 def test_subscription_job_sets_stop_event_on_stop() -> None:
-    """Start subscription as one merged long-running job with a stop signal."""
     first = _build_runtime_config(101, acquisition_mode="SUBSCRIPTION")
     second = _build_runtime_config(102, acquisition_mode="SUBSCRIPTION")
-    sub_use_case = FakeSubscribeSourceStateUseCase()
+    sub_use_case = FakeSubscribeAcquisitionUseCase()
     scheduler = _build_scheduler([first, second], sub_use_case=sub_use_case)
     scheduler.reload()
 
@@ -310,12 +309,11 @@ def test_subscription_job_sets_stop_event_on_stop() -> None:
     )
     scheduler.stop(wait=False)
 
-    assert sub_use_case.calls[0][0] == (first, second)
-    assert getattr(sub_use_case.calls[0][1], "is_set")()
+    assert [request.task_id for request, _ in sub_use_case.calls] == [101, 102]
+    assert all(getattr(stop_event, "is_set")() for _, stop_event in sub_use_case.calls)
 
 
 def test_reload_splits_subscription_jobs_by_protocol() -> None:
-    """Do not merge subscription configs from different protocols."""
     opcua_config = _build_runtime_config(101, acquisition_mode="SUBSCRIPTION")
     modbus_config = _build_runtime_config(
         102,
