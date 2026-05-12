@@ -130,11 +130,6 @@ class SourceAcquisitionUseCase:
                 "subscription_notification_queue_size must be greater than 0"
             )
 
-        if execution.subscription_notification_worker_count <= 0:
-            raise ValueError(
-                "subscription_notification_worker_count must be greater than 0"
-            )
-
         if execution.subscription_notification_max_lag_ms <= 0:
             raise ValueError(
                 "subscription_notification_max_lag_ms must be greater than 0"

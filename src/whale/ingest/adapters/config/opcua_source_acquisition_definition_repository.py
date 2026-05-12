@@ -102,9 +102,6 @@ class OpcUaSourceAcquisitionDefinitionRepository(SourceAcquisitionDefinitionPort
             subscription_notification_queue_size=(
                 task.subscription_notification_queue_size
             ),
-            subscription_notification_worker_count=(
-                task.subscription_notification_worker_count
-            ),
             subscription_notification_max_lag_ms=(
                 task.subscription_notification_max_lag_ms
             ),

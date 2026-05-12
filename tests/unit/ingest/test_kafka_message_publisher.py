@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from whale.ingest.adapters.message.kafka_message_publisher import KafkaMessagePublisher
+from whale.ingest.ports.message.message_publisher_port import StateSnapshotMessage
 from whale.ingest.runtime.message_pipeline_settings import KafkaMessageSettings
-from whale.ingest.usecases.dtos.state_snapshot_message import StateSnapshotMessage
 
 
 class FakeKafkaFuture:

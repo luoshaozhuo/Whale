@@ -1,4 +1,4 @@
-"""Unit tests for subscription acquisition role."""
+"""Unit tests for the subscription acquisition role."""
 
 from __future__ import annotations
 
@@ -6,30 +6,26 @@ import asyncio
 from datetime import UTC, datetime
 from typing import cast
 
+import pytest
+
 from whale.ingest.ports.source.source_acquisition_port import (
     SourceAcquisitionPort,
     SourceSubscriptionHandle,
     SubscriptionStateHandler,
 )
-from whale.ingest.ports.state.source_state_cache_port import (
-    ModeAwareSourceStateCachePort,
-    SourceStateCachePort,
+from whale.ingest.ports.state.source_state_cache_port import SourceStateCachePort
+from whale.ingest.usecases.dtos.acquired_node_state import (
+    AcquiredNodeStateBatch,
+    AcquiredNodeValue,
 )
-from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
-from whale.ingest.usecases.dtos.acquisition_execution_options import (
-    AcquisitionExecutionOptions,
-)
-from whale.ingest.usecases.dtos.acquisition_item_data import AcquisitionItemData
 from whale.ingest.usecases.dtos.source_acquisition_request import (
+    AcquisitionExecutionOptions,
+    AcquisitionItemData,
     SourceAcquisitionRequest,
 )
 from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionData
-from whale.ingest.usecases.roles.runtime_diagnostics_role import (
-    RuntimeDiagnosticsRole,
-)
 from whale.ingest.usecases.roles.subscription_acquisition_role import (
     SubscriptionAcquisitionRole,
-    SubscriptionAcquisitionStartResult,
     SubscriptionAcquisitionSession,
 )
 
@@ -43,81 +39,70 @@ class FakeHandle(SourceSubscriptionHandle):
 
 
 class FakeSourceAcquisitionPort:
-    def __init__(self) -> None:
-        self.start_calls: list[
-            tuple[
-                object,
-                SourceConnectionData,
-                list[AcquisitionItemData],
-                SubscriptionStateHandler,
-            ]
-        ] = []
+    def __init__(
+        self,
+        *,
+        baseline_by_ld_name: dict[str, AcquiredNodeStateBatch] | None = None,
+        fail_on_start_index: int | None = None,
+    ) -> None:
+        self._baseline_by_ld_name = baseline_by_ld_name or {}
+        self._fail_on_start_index = fail_on_start_index
+        self.read_calls: list[str] = []
+        self.start_calls: list[tuple[str, SubscriptionStateHandler]] = []
         self.handles: list[FakeHandle] = []
 
-    async def read(self, *args: object, **kwargs: object) -> list[AcquiredNodeState]:
-        del args, kwargs
-        raise NotImplementedError
+    async def read(
+        self,
+        execution: object,
+        connection: SourceConnectionData,
+        items: list[AcquisitionItemData],
+    ) -> AcquiredNodeStateBatch:
+        del execution, items
+        self.read_calls.append(connection.ld_name)
+        return self._baseline_by_ld_name[connection.ld_name]
 
     async def start_subscription(
         self,
-        execution: object,
+        execution: AcquisitionExecutionOptions,
         connection: SourceConnectionData,
         items: list[AcquisitionItemData],
         *,
         state_received: SubscriptionStateHandler,
     ) -> SourceSubscriptionHandle:
+        del execution, items
+        call_index = len(self.start_calls)
+        self.start_calls.append((connection.ld_name, state_received))
+        if self._fail_on_start_index == call_index:
+            raise RuntimeError("subscribe failed")
+
         handle = FakeHandle()
-        self.start_calls.append((execution, connection, list(items), state_received))
         self.handles.append(handle)
         return handle
 
 
 class FakeStateCachePort:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, list[AcquiredNodeState]]] = []
+        self.update_calls: list[tuple[str, AcquiredNodeStateBatch]] = []
+        self.mark_alive_calls: list[tuple[str, datetime]] = []
+        self.mark_unavailable_calls: list[tuple[str, str, str | None]] = []
 
-    def store_many(
+    def update(self, *, ld_name: str, batch: AcquiredNodeStateBatch) -> int:
+        self.update_calls.append((ld_name, batch))
+        return len(batch.values)
+
+    def mark_alive(self, *, ld_name: str, observed_at: datetime) -> None:
+        self.mark_alive_calls.append((ld_name, observed_at))
+
+    def mark_unavailable(
         self,
-        model_id: str,
-        acquired_states: list[AcquiredNodeState],
-    ) -> int:
-        self.calls.append((model_id, list(acquired_states)))
-        return len(acquired_states)
-
-
-class FakeModeAwareStateCachePort(ModeAwareSourceStateCachePort):
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str, list[AcquiredNodeState]]] = []
-
-    def store_many(
-        self,
-        model_id: str,
-        acquired_states: list[AcquiredNodeState],
-    ) -> int:
-        self.calls.append(("plain", model_id, list(acquired_states)))
-        return len(acquired_states)
-
-    def store_many_for_mode(
-        self,
-        acquisition_mode: str,
-        model_id: str,
-        acquired_states: list[AcquiredNodeState],
-    ) -> int:
-        self.calls.append((acquisition_mode, model_id, list(acquired_states)))
-        return len(acquired_states)
-
-
-class FakeDiagnosticsRole:
-    def __init__(self) -> None:
-        self.keepalive_calls: list[tuple[int, int, str]] = []
-
-    def record_keepalive(
-        self,
-        task_id: int,
-        ld_instance_id: int,
-        acquisition_mode: str,
+        *,
+        ld_name: str,
+        status: str,
+        observed_at: datetime,
+        reason: str | None = None,
     ) -> None:
-        self.keepalive_calls.append((task_id, ld_instance_id, acquisition_mode))
+        del observed_at
+        self.mark_unavailable_calls.append((ld_name, status, reason))
 
 
 def _build_request(
@@ -148,126 +133,108 @@ def _build_request(
     )
 
 
-def _build_states(source_id: str, value: str) -> list[AcquiredNodeState]:
-    return [
-        AcquiredNodeState(
-            source_id=source_id,
-            node_key="TotW",
-            value=value,
-            observed_at=datetime.now(tz=UTC),
-        )
-    ]
+def _build_batch(source_id: str, value: str) -> AcquiredNodeStateBatch:
+    now = datetime.now(tz=UTC)
+    return AcquiredNodeStateBatch(
+        source_id=source_id,
+        batch_observed_at=now,
+        client_received_at=now,
+        client_processed_at=now,
+        values=[AcquiredNodeValue(node_key="TotW", value=value)],
+    )
 
 
-def test_start_returns_sessions_for_each_connection() -> None:
+def test_start_reads_baseline_before_starting_subscriptions() -> None:
     async def _run() -> None:
-        port = FakeSourceAcquisitionPort()
-        state_cache_port = FakeStateCachePort()
+        port = FakeSourceAcquisitionPort(
+            baseline_by_ld_name={
+                "LD_01": _build_batch("LD_01", "1"),
+                "LD_02": _build_batch("LD_02", "2"),
+            }
+        )
+        cache = FakeStateCachePort()
         role = SubscriptionAcquisitionRole(
             acquisition_port=cast(SourceAcquisitionPort, port),
-            state_cache_port=cast(SourceStateCachePort, state_cache_port),
+            state_cache_port=cast(SourceStateCachePort, cache),
         )
 
-        request = _build_request()
-        start_result = await role.start(request)
+        start_result = await role.start(_build_request())
 
-        assert isinstance(start_result, SubscriptionAcquisitionStartResult)
-        assert start_result.request_id == request.request_id
-        assert start_result.task_id == request.task_id
         assert len(start_result.sessions) == 2
         assert all(
-            isinstance(session, SubscriptionAcquisitionSession) for session in start_result.sessions
+            isinstance(session, SubscriptionAcquisitionSession)
+            for session in start_result.sessions
         )
-        assert state_cache_port.calls == []
-        assert len(port.start_calls) == 2
+        assert port.read_calls == ["LD_01", "LD_02"]
+        assert [call[0] for call in cache.update_calls] == ["LD_01", "LD_02"]
+        assert [call[0] for call in cache.mark_alive_calls] == ["LD_01", "LD_02"]
 
     asyncio.run(_run())
 
 
-def test_start_returns_empty_list_when_connections_are_empty() -> None:
+def test_subscription_callback_updates_cache_for_bound_connection() -> None:
     async def _run() -> None:
-        role = SubscriptionAcquisitionRole(
-            acquisition_port=cast(SourceAcquisitionPort, FakeSourceAcquisitionPort()),
-            state_cache_port=cast(SourceStateCachePort, FakeStateCachePort()),
+        port = FakeSourceAcquisitionPort(
+            baseline_by_ld_name={"LD_01": _build_batch("LD_01", "1")}
         )
-
-        request = _build_request(connections=[])
-        start_result = await role.start(request)
-
-        assert start_result.request_id == request.request_id
-        assert start_result.task_id == request.task_id
-        assert start_result.sessions == []
-
-    asyncio.run(_run())
-
-
-def test_each_handler_uses_its_bound_connection_model_id() -> None:
-    async def _run() -> None:
-        port = FakeSourceAcquisitionPort()
-        state_cache_port = FakeStateCachePort()
-        diagnostics_role = FakeDiagnosticsRole()
+        cache = FakeStateCachePort()
         role = SubscriptionAcquisitionRole(
             acquisition_port=cast(SourceAcquisitionPort, port),
-            state_cache_port=cast(SourceStateCachePort, state_cache_port),
-            diagnostics_role=cast(RuntimeDiagnosticsRole, diagnostics_role),
-        )
-
-        request = _build_request()
-        start_result = await role.start(request)
-
-        assert start_result.request_id == request.request_id
-        assert start_result.task_id == request.task_id
-
-        first_handler = port.start_calls[0][3]
-        second_handler = port.start_calls[1][3]
-
-        await first_handler(_build_states("LD_01", "42.0"))
-        await second_handler(_build_states("LD_02", "43.0"))
-
-        assert state_cache_port.calls[0][0] == "LD_01"
-        assert state_cache_port.calls[1][0] == "LD_02"
-        assert diagnostics_role.keepalive_calls == [
-            (101, 0, "SUBSCRIBE"),
-            (101, 0, "SUBSCRIBE"),
-        ]
-
-    asyncio.run(_run())
-
-
-def test_handler_uses_mode_aware_cache_when_available() -> None:
-    async def _run() -> None:
-        port = FakeSourceAcquisitionPort()
-        state_cache_port = FakeModeAwareStateCachePort()
-        role = SubscriptionAcquisitionRole(
-            acquisition_port=cast(SourceAcquisitionPort, port),
-            state_cache_port=cast(SourceStateCachePort, state_cache_port),
+            state_cache_port=cast(SourceStateCachePort, cache),
         )
 
         await role.start(_build_request(connections=_build_request().connections[:1]))
-        handler = port.start_calls[0][3]
-        await handler(_build_states("LD_01", "42.0"))
+        handler = port.start_calls[0][1]
+        await handler(_build_batch("LD_01", "42.0"))
 
-        assert len(state_cache_port.calls) == 1
-        assert state_cache_port.calls[0][0] == "SUBSCRIBE"
-        assert state_cache_port.calls[0][1] == "LD_01"
-        assert len(state_cache_port.calls[0][2]) == 1
+        assert [call[0] for call in cache.update_calls] == ["LD_01", "LD_01"]
+        assert cache.update_calls[-1][1].values[0].value == "42.0"
+        assert [call[0] for call in cache.mark_alive_calls] == ["LD_01", "LD_01"]
+
+    asyncio.run(_run())
+
+
+def test_start_failure_marks_unavailable_and_closes_started_sessions() -> None:
+    async def _run() -> None:
+        port = FakeSourceAcquisitionPort(
+            baseline_by_ld_name={
+                "LD_01": _build_batch("LD_01", "1"),
+                "LD_02": _build_batch("LD_02", "2"),
+            },
+            fail_on_start_index=1,
+        )
+        cache = FakeStateCachePort()
+        role = SubscriptionAcquisitionRole(
+            acquisition_port=cast(SourceAcquisitionPort, port),
+            state_cache_port=cast(SourceStateCachePort, cache),
+        )
+
+        with pytest.raises(RuntimeError, match="subscribe failed"):
+            await role.start(_build_request())
+
+        assert cache.mark_unavailable_calls == [
+            ("LD_02", "ERROR", "subscription start failed")
+        ]
+        assert len(port.handles) == 1
+        assert port.handles[0].close_calls == 1
 
     asyncio.run(_run())
 
 
 def test_session_close_is_idempotent() -> None:
     async def _run() -> None:
-        port = FakeSourceAcquisitionPort()
+        port = FakeSourceAcquisitionPort(
+            baseline_by_ld_name={"LD_01": _build_batch("LD_01", "1")}
+        )
         role = SubscriptionAcquisitionRole(
             acquisition_port=cast(SourceAcquisitionPort, port),
             state_cache_port=cast(SourceStateCachePort, FakeStateCachePort()),
         )
 
-        start_result = await role.start(_build_request())
+        start_result = await role.start(_build_request(connections=_build_request().connections[:1]))
         await start_result.sessions[0].close()
         await start_result.sessions[0].close()
 
         assert port.handles[0].close_calls == 1
-        assert port.handles[1].close_calls == 0
 
     asyncio.run(_run())

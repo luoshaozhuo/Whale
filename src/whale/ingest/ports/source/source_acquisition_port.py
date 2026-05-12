@@ -1,11 +1,21 @@
-"""Source acquisition port for ingest."""
+"""source 采集端口定义。
+
+本模块定义 usecase / role 依赖的数据源采集能力接口。
+
+设计约定：
+- SourceAcquisitionPort 只表达 source 采集能力，不关心缓存、不关心调度；
+- read() 表示对一个 connection 执行一次完整读取，返回一个 batch；
+- start_subscription() 表示启动订阅，后续通过 batch callback 返回变化批次；
+- batch 是同一个 source/LD 的状态更新单元；
+- 订阅模式下的 initial read baseline 由 SubscriptionAcquisitionRole 编排，不放在 port 内。
+"""
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
+from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeStateBatch
 from whale.ingest.usecases.dtos.source_acquisition_request import (
     AcquisitionExecutionOptions,
     AcquisitionItemData,
@@ -13,7 +23,7 @@ from whale.ingest.usecases.dtos.source_acquisition_request import (
 from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionData
 
 
-SubscriptionStateHandler = Callable[[list[AcquiredNodeState]], Awaitable[None]]
+SubscriptionStateHandler = Callable[[AcquiredNodeStateBatch], Awaitable[None]]
 
 
 class SourceSubscriptionHandle(Protocol):
@@ -24,15 +34,18 @@ class SourceSubscriptionHandle(Protocol):
 
 
 class SourceAcquisitionPort(Protocol):
-    """Acquire source states from one configured source."""
+    """source 状态采集端口。"""
 
     async def read(
         self,
         execution: AcquisitionExecutionOptions,
         connection: SourceConnectionData,
         items: list[AcquisitionItemData],
-    ) -> list[AcquiredNodeState]:
-        """Acquire a batch of source states for one source."""
+    ) -> AcquiredNodeStateBatch:
+        """对一个 connection 执行一次完整读取。
+
+        返回值是一个 batch，表示同一个 source/LD 在本次读取中的完整状态样本。
+        """
 
     async def start_subscription(
         self,
@@ -42,4 +55,7 @@ class SourceAcquisitionPort(Protocol):
         *,
         state_received: SubscriptionStateHandler,
     ) -> SourceSubscriptionHandle:
-        """启动订阅并立即返回订阅句柄。"""
+        """启动订阅并立即返回订阅句柄。
+
+        订阅产生的数据变化以 AcquiredNodeStateBatch 形式回调给 state_received。
+        """

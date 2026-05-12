@@ -1,15 +1,33 @@
-"""共享的 source 通信组件导出。"""
+"""
+统一对外暴露 source 层接口和 OPC UA reader。
+"""
 
-from whale.shared.source.source_reader import (
-    OpcUaSourceReader,
+from whale.shared.source.models import (
     SourceConnectionProfile,
+    NodeValueChange,
+    Batch,
     SourceNodeInfo,
-    SourceReadPoint,
+    SubscriptionCallback,
 )
+from whale.shared.source.ports import (
+    BrowsableSourcePort,
+    ReadableSourcePort,
+    SourceReaderPort,
+    SourceSubscriptionHandlePort,
+    SubscribableSourcePort,
+)
+from whale.shared.source.opcua.reader import OpcUaSourceReader
 
 __all__ = [
     "OpcUaSourceReader",
+    "BrowsableSourcePort",
+    "ReadableSourcePort",
     "SourceConnectionProfile",
+    "NodeValueChange",
+    "Batch",
     "SourceNodeInfo",
-    "SourceReadPoint",
+    "SourceReaderPort",
+    "SourceSubscriptionHandlePort",
+    "SubscriptionCallback",
+    "SubscribableSourcePort",
 ]

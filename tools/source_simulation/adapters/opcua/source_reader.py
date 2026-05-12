@@ -10,10 +10,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from whale.shared.source.source_reader import (
-    OpcUaSourceReader as SharedOpcUaSourceReader,
-    SourceConnectionProfile,
-)
+from whale.shared.source.models import SourceConnectionProfile
+from whale.shared.source.opcua.reader import OpcUaSourceReader as SharedOpcUaSourceReader
 from tools.source_simulation.domain import (
     SourceConnection,
     SourceNodeInfo,
@@ -43,7 +41,10 @@ class OpcUaSourceReader(SharedOpcUaSourceReader):
         *,
         fast_mode: bool = True,
     ) -> tuple[SourceReadPoint, ...]:
-        batch = await super().read(node_paths, fast_mode=fast_mode)
+        batch = await super().read(
+            node_paths,
+            include_metadata=not fast_mode,
+        )
         return tuple(
             SourceReadPoint(
                 path=point.path,

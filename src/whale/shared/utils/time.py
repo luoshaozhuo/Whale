@@ -32,6 +32,21 @@ def parse_iso_datetime(value: str) -> datetime:
     return ensure_utc(datetime.fromisoformat(normalized))
 
 
+def max_datetime(
+    left: datetime | None,
+    right: datetime | None,
+) -> datetime | None:
+    """Return the newer value between two optional datetimes in UTC."""
+
+    if left is None:
+        return right
+
+    if right is None:
+        return left
+
+    return max(ensure_utc(left), ensure_utc(right))
+
+
 def floor_to_second(dt: datetime) -> datetime:
     """Floor a datetime to second resolution in UTC.
 

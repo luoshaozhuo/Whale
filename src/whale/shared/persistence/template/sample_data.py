@@ -320,7 +320,6 @@ def _create_acquisition_tasks(
 
         subscription_start_interval_ms=25,
         subscription_notification_queue_size=4096,
-        subscription_notification_worker_count=2,
         subscription_notification_max_lag_ms=200,
 
         protocol_params={},

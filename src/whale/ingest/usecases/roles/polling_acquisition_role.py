@@ -2,6 +2,14 @@
 
 READ_ONCE / ONCE 由 max_iteration=1 表达。
 POLLING 由 max_iteration=None 或 max_iteration>1 表达。
+
+设计约定：
+- Polling 不使用 queue；
+- Polling 不拆分 items；
+- 单个 connection 一次性读取全部 items；
+- 多个 connection 之间只做错峰启动与最大并发控制；
+- acquisition_port.read(...) 返回 AcquiredNodeStateBatch；
+- latest-state cache 按 batch 更新。
 """
 
 from __future__ import annotations
@@ -13,7 +21,7 @@ from dataclasses import dataclass
 
 from whale.ingest.ports.source.source_acquisition_port import SourceAcquisitionPort
 from whale.ingest.ports.state.source_state_cache_port import SourceStateCachePort
-from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
+from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeStateBatch
 from whale.ingest.usecases.dtos.source_acquisition_request import (
     SourceAcquisitionRequest,
 )
@@ -112,7 +120,10 @@ class PollingAcquisitionRole:
             wait_seconds = max(0.0, interval_seconds - elapsed)
 
             if wait_seconds <= 0:
-                # TODO: 后续记录 polling cycle overrun。
+                # TODO: 后续记录 polling cycle overrun：
+                # - request_id = request.request_id
+                # - task_id = request.task_id
+                # - elapsed / interval_seconds
                 continue
 
             with contextlib.suppress(asyncio.TimeoutError):
@@ -192,15 +203,20 @@ class PollingAcquisitionRole:
         """读取单个 connection，并更新 latest-state cache。"""
 
         try:
-            states = await self._acquisition_port.read(
+            batch = await self._acquisition_port.read(
                 request.execution,
                 connection,
                 list(request.items),
             )
 
-            self._update_states(
+            self._update_batch(
                 ld_name=connection.ld_name,
-                states=list(states),
+                batch=batch,
+            )
+
+            self._state_cache_port.mark_alive(
+                ld_name=connection.ld_name,
+                observed_at=batch.client_processed_at,
             )
 
         except Exception:
@@ -209,21 +225,37 @@ class PollingAcquisitionRole:
             # - task_id = request.task_id
             # - connection.ld_name / connection.ied_name
             # - exception 类型与消息
-            pass
+            self._state_cache_port.mark_unavailable(
+                ld_name=connection.ld_name,
+                status="ERROR",
+                observed_at=time_to_datetime_utc(),
+                reason="polling read failed",
+            )
             raise
 
-    def _update_states(
+    def _update_batch(
         self,
         *,
         ld_name: str,
-        states: list[AcquiredNodeState],
+        batch: AcquiredNodeStateBatch,
     ) -> int:
         """更新 latest-state cache。"""
 
-        if not states:
+        if batch.is_empty():
             return 0
 
         return self._state_cache_port.update(
             ld_name=ld_name,
-            states=states,
+            batch=batch,
         )
+
+
+def time_to_datetime_utc():
+    """返回当前 UTC 时间。
+
+    保持为独立函数，便于后续测试替换。
+    """
+
+    from datetime import UTC, datetime
+
+    return datetime.now(tz=UTC)

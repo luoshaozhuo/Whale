@@ -1,6 +1,9 @@
 """DTOs for ingest use cases."""
 
-from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
+from whale.ingest.usecases.dtos.acquired_node_state import (
+    AcquiredNodeStateBatch,
+    AcquiredNodeValue,
+)
 from whale.ingest.usecases.dtos.source_acquisition_request import (
     AcquisitionExecutionOptions,
     AcquisitionItemData,
@@ -14,7 +17,8 @@ from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionDa
 __all__ = [
     "AcquisitionItemData",
     "AcquisitionExecutionOptions",
-    "AcquiredNodeState",
+    "AcquiredNodeStateBatch",
+    "AcquiredNodeValue",
     "SourceAcquisitionRequest",
     "SourceAcquisitionStartResult",
     "SourceConnectionData",

@@ -1,9 +1,20 @@
-"""Load tests for source_simulation OPC UA polling capacity.
+"""Load test for source simulator sampling capacity.
+
+Goal:
+- Keep CPU usage under a configurable limit (default 50%).
+- Fix per-server variable count (default 400).
+- For each server-count level, find the max sustainable sampling rate when client reads
+  full variable set in smooth polling loops.
+- Pass criteria per level:
+  1) each poll batch size equals fixed variable count;
+  2) server_timestamp-derived receive period is close to target sampling period;
+  3) CPU peak stays below configured limit.
 
 Run examples:
-    SOURCE_SIM_LOAD_LEVEL_DURATION_S=3 pytest -q tests/performance/load/test_source_simulation_load.py -s
-    SOURCE_SIM_LOAD_POLL_HZ_RAMP=10,20,30,40 pytest -q tests/performance/load/test_source_simulation_load.py -s
-    SOURCE_SIM_LOAD_SERVER_RAMP=1,5,10,15,20,25,30 pytest -q tests/performance/load/test_source_simulation_load.py -s
+    SOURCE_SIM_LOAD_LEVEL_DURATION_S=4 \
+    SOURCE_SIM_LOAD_SERVER_RAMP=1,2,4 \
+    SOURCE_SIM_LOAD_SAMPLE_HZ_RAMP=2,4,6,8,10,12 \
+    pytest -q tests/performance/load/test_source_simulation_load.py -s
 """
 
 from __future__ import annotations
@@ -16,6 +27,7 @@ import time
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -29,116 +41,174 @@ import pytest
 from whale.ingest.adapters.config.source_runtime_config_repository import (
     SourceRuntimeConfigRepository,
 )
+from whale.shared.utils.time import ensure_utc
 from tools.source_simulation.adapters.opcua.nodeset_builder import logical_path
 from tools.source_simulation.adapters.registry import build_source_reader
 from tools.source_simulation.domain import (
     SimulatedPoint,
     SimulatedSource,
     SourceConnection,
+    SourceReadPoint,
     UpdateConfig,
 )
 from tools.source_simulation.fleet import SourceSimulatorFleet
 
-# 每个压力层级持续时长。
-# 建议本地先用 2~3 秒快速摸底，再按需要拉长。
-LOAD_LEVEL_DURATION_S = float(os.environ.get("SOURCE_SIM_LOAD_LEVEL_DURATION_S", "3"))
-# fleet 启动后的预热时间，避免把 server 刚启动时的波动算进结果。
+LOAD_LEVEL_DURATION_S = float(os.environ.get("SOURCE_SIM_LOAD_LEVEL_DURATION_S", "5"))
 WARMUP_S = float(os.environ.get("SOURCE_SIM_LOAD_WARMUP_S", "1"))
-# 每个层级内部再额外丢弃前面的预热窗口，只统计后半段稳定数据。
-MEASURE_AFTER_S = float(os.environ.get("SOURCE_SIM_LOAD_MEASURE_AFTER_S", "0"))
-# 场景 1：单 server，全量读取，逐步提高 polling 频率。
-POLL_HZ_RAMP = tuple(
-    int(part.strip())
-    for part in os.environ.get("SOURCE_SIM_LOAD_POLL_HZ_RAMP", "10,20,30,40,50").split(",")
-    if part.strip()
+MEASURE_AFTER_S = float(os.environ.get("SOURCE_SIM_LOAD_MEASURE_AFTER_S", "1"))
+VARIABLES_PER_SERVER = int(os.environ.get("SOURCE_SIM_LOAD_VARIABLES_PER_SERVER", "400"))
+CPU_LIMIT_PERCENT = float(os.environ.get("SOURCE_SIM_LOAD_CPU_LIMIT_PERCENT", "50"))
+PERIOD_TOLERANCE_RATIO = float(
+    os.environ.get("SOURCE_SIM_LOAD_PERIOD_TOLERANCE_RATIO", "0.2")
 )
-# 场景 2：固定 10Hz，全量读取，逐步增加 server 数。
+PERIOD_PASS_RATIO = float(os.environ.get("SOURCE_SIM_LOAD_PERIOD_PASS_RATIO", "0.95"))
+MIN_PERIOD_SAMPLES = int(os.environ.get("SOURCE_SIM_LOAD_MIN_PERIOD_SAMPLES", "8"))
+SOURCE_UPDATE_HZ = float(os.environ.get("SOURCE_SIM_LOAD_SOURCE_UPDATE_HZ", "10"))
+SOURCE_UPDATE_INTERVAL_S = 1.0 / SOURCE_UPDATE_HZ
+STAGGER_MODE = os.environ.get("SOURCE_SIM_LOAD_STAGGER_MODE", "even").strip().lower()
 SERVER_RAMP = tuple(
     int(part.strip())
-    for part in os.environ.get("SOURCE_SIM_LOAD_SERVER_RAMP", ",".join(str(i) for i in range(1, 21, 5))).split(",")
+    for part in os.environ.get("SOURCE_SIM_LOAD_SERVER_RAMP", "1,2,4,8").split(",")
     if part.strip()
 )
-# 认为“达标”的最低实际频率比例。
-# 例如目标 10Hz，阈值 0.95，则最低要求达到 9.5Hz。
-SUCCESS_RATE_RATIO = float(os.environ.get("SOURCE_SIM_LOAD_SUCCESS_RATE_RATIO", "0.95"))
-STAGGER_MODE = os.environ.get("SOURCE_SIM_LOAD_STAGGER_MODE", "none").strip().lower()
+SAMPLE_HZ_RAMP = tuple(
+    float(part.strip())
+    for part in os.environ.get("SOURCE_SIM_LOAD_SAMPLE_HZ_RAMP", "2,4,6,8,10,12").split(",")
+    if part.strip()
+)
 OUTPUT_DIR = Path(os.environ.get("SOURCE_SIM_LOAD_OUTPUT_DIR", "tests/tmp"))
-SINGLE_SERVER_REPORT_PATH = OUTPUT_DIR / "source_simulation_load_single_server_report.md"
-MULTI_SERVER_REPORT_PATH = OUTPUT_DIR / "source_simulation_load_multi_server_report.md"
-# simulator 本身的更新频率固定为 10Hz。
-SOURCE_UPDATE_HZ = 10.0
-SOURCE_UPDATE_INTERVAL_S = 1.0 / SOURCE_UPDATE_HZ
+REPORT_PATH = OUTPUT_DIR / "source_simulation_load_report.md"
 
 if STAGGER_MODE not in {"none", "even"}:
     raise ValueError(f"Unsupported SOURCE_SIM_LOAD_STAGGER_MODE: {STAGGER_MODE!r}")
 
+if not SERVER_RAMP:
+    raise ValueError("SOURCE_SIM_LOAD_SERVER_RAMP must not be empty")
+
+if not SAMPLE_HZ_RAMP:
+    raise ValueError("SOURCE_SIM_LOAD_SAMPLE_HZ_RAMP must not be empty")
+
 
 @dataclass(frozen=True, slots=True)
-class PollLevelResult:
-    """一个负载层级的汇总结果。"""
+class WorkerMetrics:
+    """Polling metrics for one server in one level."""
 
-    mode: str
-    level: int
-    server_count: int
-    target_hz: float
-    expected_variable_count: int
-    target_points_per_second: float
-    completed_points_per_second: float
     completed_polls: int
     batch_mismatches: int
     read_errors: int
-    late_loops: int
-    late_loop_ratio: float
-    measured_duration_s: float
+    achieved_hz: float
+    period_sample_count: int
+    period_pass_count: int
+    period_p95_error_ms: float
+
+
+@dataclass(frozen=True, slots=True)
+class LevelResult:
+    """Merged result for one (server_count, target_hz) level."""
+
+    server_count: int
+    target_hz: float
+    expected_variable_count: int
+    completed_polls_total: int
+    batch_mismatches_total: int
+    read_errors_total: int
     achieved_hz_min: float
     achieved_hz_mean: float
-    cycle_p95_ms: float
+    period_samples_total: int
+    period_pass_ratio: float
+    period_p95_error_ms: float
+    cpu_mean_percent: float
+    cpu_peak_percent: float
     passed: bool
 
 
 @dataclass(frozen=True, slots=True)
-class WorkerResult:
-    """单个 server 在一个层级里的 polling 结果。"""
+class ServerRampSummary:
+    """Summary for one server-count ramp."""
 
-    completed_polls: int
-    batch_mismatches: int
-    read_errors: int
-    late_loops: int
-    achieved_hz: float
-    cycle_durations_ms: tuple[float, ...]
+    server_count: int
+    max_pass_hz: float | None
+    levels: tuple[LevelResult, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class LoadTestContext:
-    """负载测试共享上下文。"""
+    """Shared simulator context for the whole ramp test."""
 
     servers: tuple[SimulatedSource, ...]
     expected_variable_count: int
 
 
+def _read_cpu_stat() -> tuple[int, int]:
+    """Return (total, idle) ticks from /proc/stat."""
+
+    with open("/proc/stat", "r", encoding="utf-8") as fp:
+        parts = fp.readline().split()
+
+    if len(parts) < 8 or parts[0] != "cpu":
+        raise RuntimeError("Unexpected /proc/stat format")
+
+    values = [int(item) for item in parts[1:]]
+    idle = values[3] + values[4]
+    total = sum(values)
+    return total, idle
+
+
+async def _sample_cpu_percent(
+    stop_event: asyncio.Event,
+    *,
+    interval_s: float = 0.25,
+) -> list[float]:
+    """Sample host CPU usage until stop_event is set."""
+
+    samples: list[float] = []
+    prev_total, prev_idle = _read_cpu_stat()
+
+    while not stop_event.is_set():
+        await asyncio.sleep(interval_s)
+        cur_total, cur_idle = _read_cpu_stat()
+        delta_total = cur_total - prev_total
+        delta_idle = cur_idle - prev_idle
+        prev_total, prev_idle = cur_total, cur_idle
+
+        if delta_total <= 0:
+            continue
+
+        used_ratio = max(0.0, min(1.0, (delta_total - delta_idle) / delta_total))
+        samples.append(used_ratio * 100.0)
+
+    return samples
+
+
 def _build_sources_from_repository() -> tuple[SimulatedSource, ...]:
-    """从仓库配置中挑出一个最大的 OPC UA 组作为压测样本。"""
+    """Pick largest OPC UA server group and build test sources."""
 
     runtime_repo = SourceRuntimeConfigRepository()
     server_rows = runtime_repo.list_servers(
         group_by=("signal_profile_id", "application_protocol"),
         first_group_only=False,
     )
-    grouped_server_rows: dict[tuple[int, str], list] = defaultdict(list)
+    grouped: dict[tuple[int, str], list] = defaultdict(list)
     for row in server_rows:
-        grouped_server_rows[(row.signal_profile_id, row.application_protocol)].append(row)
+        grouped[(row.signal_profile_id, row.application_protocol)].append(row)
 
     opcua_groups = [
         (group_key, rows)
-        for group_key, rows in grouped_server_rows.items()
+        for group_key, rows in grouped.items()
         if group_key[1].strip().lower().replace("_", "").replace("-", "") == "opcua"
     ]
     if not opcua_groups:
-        raise AssertionError("Expected at least one OPC UA server group from repository")
+        raise AssertionError("Expected at least one OPC UA server group")
 
     selected_group_key, current_group_rows = max(opcua_groups, key=lambda item: len(item[1]))
     selected_profile_id, _ = selected_group_key
+
     point_rows = runtime_repo.list_profile_items(selected_profile_id)
+    if len(point_rows) < VARIABLES_PER_SERVER:
+        raise AssertionError(
+            f"Profile items ({len(point_rows)}) < required variables/server ({VARIABLES_PER_SERVER})"
+        )
+
     points = tuple(
         SimulatedPoint(
             ln_name=row.ln_name,
@@ -146,12 +216,10 @@ def _build_sources_from_repository() -> tuple[SimulatedSource, ...]:
             unit=row.unit.strip() if row.unit is not None else None,
             data_type=row.data_type,
         )
-        for row in point_rows
+        for row in point_rows[:VARIABLES_PER_SERVER]
     )
-    if not points:
-        raise AssertionError(f"Expected profile items for signal_profile_id={selected_profile_id}")
 
-    sources = tuple(
+    return tuple(
         SimulatedSource(
             connection=SourceConnection(
                 name=(row.asset_code or row.ld_name or row.ied_name or f"source_{row.endpoint_id}").strip(),
@@ -167,13 +235,10 @@ def _build_sources_from_repository() -> tuple[SimulatedSource, ...]:
         )
         for row in current_group_rows
     )
-    if not sources:
-        raise AssertionError("Expected at least one OPC UA source for load test")
-    return sources
 
 
 async def _variable_count(source: SimulatedSource) -> int:
-    """读取一个 source 的变量总数，用来校验 profile 与地址空间是否一致。"""
+    """Read one source variable count from live reader."""
 
     async with build_source_reader(source.connection) as reader:
         node_infos = await reader.list_nodes()
@@ -181,12 +246,7 @@ async def _variable_count(source: SimulatedSource) -> int:
 
 
 def _node_paths_for_server(server: SimulatedSource) -> tuple[str, ...]:
-    """按一组共享 points 和当前 server 的连接信息生成读取路径。"""
-
-    return tuple(
-        f"s={logical_path(server.connection, point)}"
-        for point in server.points
-    )
+    return tuple(f"s={logical_path(server.connection, point)}" for point in server.points)
 
 
 def _start_offset_for_worker(
@@ -195,99 +255,29 @@ def _start_offset_for_worker(
     worker_count: int,
     target_interval_s: float,
 ) -> float:
-    if STAGGER_MODE == "none":
+    if STAGGER_MODE == "none" or worker_count <= 1:
         return 0.0
-    if STAGGER_MODE == "even":
-        if worker_count <= 0:
-            raise ValueError("worker_count must be greater than 0")
-        if worker_index < 0 or worker_index >= worker_count:
-            raise ValueError("worker_index must be in [0, worker_count)")
-        if target_interval_s < 0:
-            raise ValueError("target_interval_s must be greater than or equal to 0")
-        if worker_count == 1 or target_interval_s == 0:
-            return 0.0
-        return worker_index * target_interval_s / worker_count
-    raise ValueError(f"Unsupported SOURCE_SIM_LOAD_STAGGER_MODE: {STAGGER_MODE!r}")
+    return worker_index * target_interval_s / worker_count
 
 
-async def _poll_source_for_duration(
-    source: SimulatedSource,
-    *,
-    node_paths: tuple[str, ...],
-    target_hz: float,
-    duration_s: float,
-    measure_after_s: float,
-    start_offset_s: float = 0.0,
-) -> WorkerResult:
-    """在固定时长内，以目标频率对单个 server 做全量批量 polling。"""
+def _normalize_timestamp(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return ensure_utc(value)
 
-    if measure_after_s < 0:
-        raise ValueError("measure_after_s must be greater than or equal to 0")
-    if measure_after_s >= duration_s:
-        raise ValueError("measure_after_s must be less than duration_s")
-    if start_offset_s < 0:
-        raise ValueError("start_offset_s must be greater than or equal to 0")
 
-    target_interval_s = 1.0 / target_hz
-    base_started_at = time.monotonic()
-    started_at = base_started_at + start_offset_s
-    deadline = started_at + duration_s
-    measure_started_at = started_at + measure_after_s
-    next_run_at = started_at
-    completed_polls = 0
-    batch_mismatches = 0
-    read_errors = 0
-    late_loops = 0
-    cycle_durations_ms: list[float] = []
-
-    async with build_source_reader(source.connection) as reader:
-        while True:
-            now = time.monotonic()
-            if now >= deadline:
-                break
-
-            # 如果当前时间已经明显超过下一轮计划时间，说明调度开始积压。
-            if now > next_run_at + target_interval_s:
-                late_loops += 1
-
-            wait_seconds = max(0.0, next_run_at - now)
-            if wait_seconds > 0:
-                await asyncio.sleep(wait_seconds)
-
-            cycle_started_at = time.monotonic()
-            should_measure = cycle_started_at >= measure_started_at
-            try:
-                # 这里每一轮都是“全量变量读取”，是本测试真正施加的负载。
-                batch = await reader.read(node_paths, fast_mode=False)
-            except Exception:
-                if should_measure:
-                    read_errors += 1
-            else:
-                if should_measure:
-                    completed_polls += 1
-                # 理论上 batch 大小应始终等于变量总数，否则视为结果不完整。
-                if should_measure and len(batch) != len(node_paths):
-                    batch_mismatches += 1
-
-            if should_measure:
-                cycle_durations_ms.append((time.monotonic() - cycle_started_at) * 1000.0)
-            next_run_at += target_interval_s
-
-    measured_duration_s = duration_s - measure_after_s
-    achieved_hz = completed_polls / measured_duration_s if measured_duration_s > 0 else 0.0
-    return WorkerResult(
-        completed_polls=completed_polls,
-        batch_mismatches=batch_mismatches,
-        read_errors=read_errors,
-        late_loops=late_loops,
-        achieved_hz=achieved_hz,
-        cycle_durations_ms=tuple(cycle_durations_ms),
-    )
+def _batch_server_timestamp(batch: tuple[SourceReadPoint, ...]) -> datetime | None:
+    timestamps = [
+        _normalize_timestamp(point.server_timestamp)
+        for point in batch
+        if point.server_timestamp is not None
+    ]
+    if not timestamps:
+        return None
+    return max(timestamps)
 
 
 def _percentile(values: tuple[float, ...], q: float) -> float:
-    """计算简单分位数，用于输出每个 worker 的 cycle p95。"""
-
     if not values:
         return 0.0
     ordered = sorted(values)
@@ -300,337 +290,341 @@ def _percentile(values: tuple[float, ...], q: float) -> float:
     return ordered[low_index] * (1.0 - weight) + ordered[high_index] * weight
 
 
-async def _run_poll_level(
-    servers: tuple[SimulatedSource, ...],
+def _evaluate_period(
+    timestamps: tuple[datetime, ...],
     *,
-    expected_variable_count: int,
-    mode: str,
-    level: int,
+    target_hz: float,
+) -> tuple[int, int, float]:
+    """Evaluate server_timestamp period against target sampling period."""
+
+    if len(timestamps) < 2:
+        return 0, 0, 0.0
+
+    expected_period_s = 1.0 / target_hz
+    tolerance_s = expected_period_s * PERIOD_TOLERANCE_RATIO
+
+    deltas_s = tuple(
+        max(0.0, (timestamps[index] - timestamps[index - 1]).total_seconds())
+        for index in range(1, len(timestamps))
+    )
+    pass_count = sum(
+        1
+        for delta in deltas_s
+        if abs(delta - expected_period_s) <= tolerance_s
+    )
+    errors_ms = tuple(abs(delta - expected_period_s) * 1000.0 for delta in deltas_s)
+    return len(deltas_s), pass_count, _percentile(errors_ms, 0.95)
+
+
+async def _poll_source_for_duration(
+    source: SimulatedSource,
+    *,
+    node_paths: tuple[str, ...],
     target_hz: float,
     duration_s: float,
-    measure_after_s: float = MEASURE_AFTER_S,
-) -> PollLevelResult:
-    """运行一个负载层级，并把多个 server 的结果汇总成一条记录。"""
+    measure_after_s: float,
+    start_offset_s: float,
+) -> WorkerMetrics:
+    """Poll one server with full-batch reads for a fixed duration."""
 
     target_interval_s = 1.0 / target_hz
-    worker_count = len(servers)
-    worker_results = tuple(
-        await asyncio.gather(
-            *(
-                _poll_source_for_duration(
-                    server,
-                    node_paths=_node_paths_for_server(server),
-                    target_hz=target_hz,
-                    duration_s=duration_s,
-                    measure_after_s=measure_after_s,
-                    start_offset_s=_start_offset_for_worker(
-                        worker_index=index,
-                        worker_count=worker_count,
-                        target_interval_s=target_interval_s,
-                    ),
-                )
-                for index, server in enumerate(servers)
-            )
-        )
-    )
+    started_at = time.monotonic() + start_offset_s
+    deadline = started_at + duration_s
+    measure_started_at = started_at + measure_after_s
+    next_run_at = started_at
 
-    achieved_hz_values = tuple(result.achieved_hz for result in worker_results)
-    cycle_p95_values = tuple(
-        _percentile(result.cycle_durations_ms, 0.95)
-        for result in worker_results
-        if result.cycle_durations_ms
-    )
-    batch_mismatches = sum(result.batch_mismatches for result in worker_results)
-    read_errors = sum(result.read_errors for result in worker_results)
-    late_loops = sum(result.late_loops for result in worker_results)
-    completed_polls = sum(result.completed_polls for result in worker_results)
+    completed_polls = 0
+    batch_mismatches = 0
+    read_errors = 0
+    sampled_timestamps: list[datetime] = []
+
+    async with build_source_reader(source.connection) as reader:
+        while True:
+            now = time.monotonic()
+            if now >= deadline:
+                break
+
+            wait_seconds = max(0.0, next_run_at - now)
+            if wait_seconds > 0:
+                await asyncio.sleep(wait_seconds)
+
+            cycle_started_at = time.monotonic()
+            should_measure = cycle_started_at >= measure_started_at
+            try:
+                batch = await reader.read(node_paths, fast_mode=False)
+            except Exception:
+                if should_measure:
+                    read_errors += 1
+            else:
+                if should_measure:
+                    completed_polls += 1
+                    if len(batch) != len(node_paths):
+                        batch_mismatches += 1
+                    ts = _batch_server_timestamp(batch)
+                    if ts is not None:
+                        sampled_timestamps.append(ts)
+
+            next_run_at += target_interval_s
+
     measured_duration_s = duration_s - measure_after_s
-    target_points_per_second = len(servers) * target_hz * expected_variable_count
-    completed_points_per_second = (
-        completed_polls * expected_variable_count / measured_duration_s
-        if measured_duration_s > 0
-        else 0.0
-    )
-    expected_polls_per_worker = int(measured_duration_s * target_hz)
-    expected_polls_total = expected_polls_per_worker * len(servers)
-    late_loop_ratio = late_loops / max(expected_polls_total, 1)
-    achieved_hz_min = min(achieved_hz_values, default=0.0)
-    achieved_hz_mean = statistics.mean(achieved_hz_values) if achieved_hz_values else 0.0
-    cycle_p95_ms = max(cycle_p95_values, default=0.0)
-    # 通过标准：
-    # 1. 没有变量数不完整；
-    # 2. 没有读异常；
-    # 3. 最慢的 worker 也达到目标频率阈值。
-    passed = (
-        batch_mismatches == 0
-        and read_errors == 0
-        and achieved_hz_min >= target_hz * SUCCESS_RATE_RATIO
+    achieved_hz = completed_polls / measured_duration_s if measured_duration_s > 0 else 0.0
+    period_sample_count, period_pass_count, period_p95_error_ms = _evaluate_period(
+        tuple(sampled_timestamps),
+        target_hz=target_hz,
     )
 
-    return PollLevelResult(
-        mode=mode,
-        level=level,
-        server_count=len(servers),
-        target_hz=target_hz,
-        expected_variable_count=expected_variable_count,
-        target_points_per_second=target_points_per_second,
-        completed_points_per_second=completed_points_per_second,
+    return WorkerMetrics(
         completed_polls=completed_polls,
         batch_mismatches=batch_mismatches,
         read_errors=read_errors,
-        late_loops=late_loops,
-        late_loop_ratio=late_loop_ratio,
-        measured_duration_s=measured_duration_s,
-        achieved_hz_min=achieved_hz_min,
-        achieved_hz_mean=achieved_hz_mean,
-        cycle_p95_ms=cycle_p95_ms,
+        achieved_hz=achieved_hz,
+        period_sample_count=period_sample_count,
+        period_pass_count=period_pass_count,
+        period_p95_error_ms=period_p95_error_ms,
+    )
+
+
+async def _run_level(
+    servers: tuple[SimulatedSource, ...],
+    *,
+    expected_variable_count: int,
+    target_hz: float,
+) -> LevelResult:
+    """Run one (server_count, target_hz) level."""
+
+    target_interval_s = 1.0 / target_hz
+    stop_event = asyncio.Event()
+    cpu_task = asyncio.create_task(_sample_cpu_percent(stop_event))
+
+    try:
+        worker_results = tuple(
+            await asyncio.gather(
+                *(
+                    _poll_source_for_duration(
+                        server,
+                        node_paths=_node_paths_for_server(server),
+                        target_hz=target_hz,
+                        duration_s=LOAD_LEVEL_DURATION_S,
+                        measure_after_s=MEASURE_AFTER_S,
+                        start_offset_s=_start_offset_for_worker(
+                            worker_index=index,
+                            worker_count=len(servers),
+                            target_interval_s=target_interval_s,
+                        ),
+                    )
+                    for index, server in enumerate(servers)
+                )
+            )
+        )
+    finally:
+        stop_event.set()
+
+    cpu_samples = await cpu_task
+
+    achieved_hz_values = tuple(item.achieved_hz for item in worker_results)
+    completed_polls_total = sum(item.completed_polls for item in worker_results)
+    batch_mismatches_total = sum(item.batch_mismatches for item in worker_results)
+    read_errors_total = sum(item.read_errors for item in worker_results)
+    period_samples_total = sum(item.period_sample_count for item in worker_results)
+    period_pass_total = sum(item.period_pass_count for item in worker_results)
+    period_p95_error_ms = max(
+        (item.period_p95_error_ms for item in worker_results),
+        default=0.0,
+    )
+
+    period_pass_ratio = (
+        period_pass_total / period_samples_total if period_samples_total > 0 else 0.0
+    )
+    cpu_mean_percent = statistics.mean(cpu_samples) if cpu_samples else 0.0
+    cpu_peak_percent = max(cpu_samples, default=0.0)
+
+    passed = (
+        batch_mismatches_total == 0
+        and read_errors_total == 0
+        and period_samples_total >= len(servers) * MIN_PERIOD_SAMPLES
+        and period_pass_ratio >= PERIOD_PASS_RATIO
+        and cpu_peak_percent <= CPU_LIMIT_PERCENT
+    )
+
+    return LevelResult(
+        server_count=len(servers),
+        target_hz=target_hz,
+        expected_variable_count=expected_variable_count,
+        completed_polls_total=completed_polls_total,
+        batch_mismatches_total=batch_mismatches_total,
+        read_errors_total=read_errors_total,
+        achieved_hz_min=min(achieved_hz_values, default=0.0),
+        achieved_hz_mean=statistics.mean(achieved_hz_values) if achieved_hz_values else 0.0,
+        period_samples_total=period_samples_total,
+        period_pass_ratio=period_pass_ratio,
+        period_p95_error_ms=period_p95_error_ms,
+        cpu_mean_percent=cpu_mean_percent,
+        cpu_peak_percent=cpu_peak_percent,
         passed=passed,
     )
 
 
-async def _run_frequency_ramp(
+async def _run_server_level(
     context: LoadTestContext,
-) -> tuple[PollLevelResult, ...]:
-    """异步执行单 server 提频率场景。"""
+    *,
+    server_count: int,
+) -> ServerRampSummary:
+    """Run sampling-rate ramp for one server-count level."""
 
-    results: list[PollLevelResult] = []
-    for level in POLL_HZ_RAMP:
-        results.append(
-            await _run_poll_level(
-                context.servers[:1],
+    servers = context.servers[:server_count]
+    levels: list[LevelResult] = []
+
+    for target_hz in SAMPLE_HZ_RAMP:
+        levels.append(
+            await _run_level(
+                servers,
                 expected_variable_count=context.expected_variable_count,
-                mode="single_server_poll_hz_ramp",
-                level=level,
-                target_hz=float(level),
-                duration_s=LOAD_LEVEL_DURATION_S,
+                target_hz=target_hz,
             )
         )
-    return tuple(results)
 
-
-async def _run_server_ramp(
-    context: LoadTestContext,
-) -> tuple[PollLevelResult, ...]:
-    """异步执行多 server 固定 10Hz 场景。
-
-    每个层级内部会并发 polling 多个 server；
-    层级之间保持顺序推进，用于得到清晰的容量拐点。
-    """
-
-    results: list[PollLevelResult] = []
-    for level in SERVER_RAMP:
-        results.append(
-            await _run_poll_level(
-                context.servers[:level],
-                expected_variable_count=context.expected_variable_count,
-                mode="multi_server_ramp",
-                level=level,
-                target_hz=SOURCE_UPDATE_HZ,
-                duration_s=LOAD_LEVEL_DURATION_S,
-            )
-        )
-    return tuple(results)
-
-
-def _max_consecutive_passed(level_results: tuple[PollLevelResult, ...]) -> PollLevelResult | None:
-    """取 ramp 中“连续通过”的最后一个层级，作为当前可承受上限。"""
-
-    last_passed: PollLevelResult | None = None
-    for result in level_results:
-        if not result.passed:
+    max_pass_hz: float | None = None
+    for level in levels:
+        if not level.passed:
             break
-        last_passed = result
-    return last_passed
+        max_pass_hz = level.target_hz
+
+    return ServerRampSummary(
+        server_count=server_count,
+        max_pass_hz=max_pass_hz,
+        levels=tuple(levels),
+    )
 
 
-def _report_table(level_results: tuple[PollLevelResult, ...]) -> str:
-    """把层级结果渲染成 markdown 表格。"""
-
+def _report_table(levels: tuple[LevelResult, ...]) -> str:
     lines = [
-        "| level | servers | target_hz | vars/server | target_points/s | completed_points/s | achieved_hz_min | achieved_hz_mean | p95_cycle_ms | mismatches | read_errors | late_loops | late_loop_ratio | passed |",
+        "| target_hz | servers | vars/server | completed_polls | achieved_hz_min | achieved_hz_mean | period_samples | period_pass_ratio | period_p95_error_ms | cpu_mean% | cpu_peak% | mismatches | read_errors | passed |",
         "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|",
     ]
-    for result in level_results:
+    for item in levels:
         lines.append(
             "| "
-            f"{result.level} | "
-            f"{result.server_count} | "
-            f"{result.target_hz:.1f} | "
-            f"{result.expected_variable_count} | "
-            f"{result.target_points_per_second:.1f} | "
-            f"{result.completed_points_per_second:.1f} | "
-            f"{result.achieved_hz_min:.2f} | "
-            f"{result.achieved_hz_mean:.2f} | "
-            f"{result.cycle_p95_ms:.1f} | "
-            f"{result.batch_mismatches} | "
-            f"{result.read_errors} | "
-            f"{result.late_loops} | "
-            f"{result.late_loop_ratio:.3f} | "
-            f"{'yes' if result.passed else 'no'} |"
+            f"{item.target_hz:.1f} | "
+            f"{item.server_count} | "
+            f"{item.expected_variable_count} | "
+            f"{item.completed_polls_total} | "
+            f"{item.achieved_hz_min:.2f} | "
+            f"{item.achieved_hz_mean:.2f} | "
+            f"{item.period_samples_total} | "
+            f"{item.period_pass_ratio:.3f} | "
+            f"{item.period_p95_error_ms:.1f} | "
+            f"{item.cpu_mean_percent:.1f} | "
+            f"{item.cpu_peak_percent:.1f} | "
+            f"{item.batch_mismatches_total} | "
+            f"{item.read_errors_total} | "
+            f"{'yes' if item.passed else 'no'} |"
         )
     return "\n".join(lines)
 
 
-def _write_single_server_report(
-    *,
-    variable_results: tuple[PollLevelResult, ...],
-) -> None:
-    """写出单 server 提频率场景的 markdown 报告。"""
-
+def _write_report(results: tuple[ServerRampSummary, ...]) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    max_poll_level = _max_consecutive_passed(variable_results)
 
-    report = "\n".join(
-        [
-            "# Source Simulation Load Report",
-            "",
-            "## Config",
-            "",
-            f"- Source update rate: {SOURCE_UPDATE_HZ:.1f}Hz",
-            f"- Load level duration: {LOAD_LEVEL_DURATION_S:.1f}s",
-            f"- Warmup: {WARMUP_S:.1f}s",
-            f"- Measure after: {MEASURE_AFTER_S:.1f}s",
-            f"- Measured duration: {LOAD_LEVEL_DURATION_S - MEASURE_AFTER_S:.1f}s",
-            f"- Stagger mode: {STAGGER_MODE}",
-            f"- Poll Hz ramp: {', '.join(str(level) for level in POLL_HZ_RAMP)}",
-            f"- Success rate threshold: {SUCCESS_RATE_RATIO:.2f}",
-            "",
-            "## Scenario: One server, full polling, increase polling frequency",
-            "",
-            (
-                f"- Max sustained polling frequency: {max_poll_level.target_hz:.1f}Hz "
-                f"({max_poll_level.expected_variable_count} variables/server)"
-                if max_poll_level is not None
-                else "- Max sustained polling frequency: none"
-            ),
-            "",
-            _report_table(variable_results),
-            "",
-        ]
-    )
-    SINGLE_SERVER_REPORT_PATH.write_text(report, encoding="utf-8")
+    lines: list[str] = [
+        "# Source Simulator Load Report",
+        "",
+        "## Config",
+        "",
+        f"- Variables per server: {VARIABLES_PER_SERVER}",
+        f"- Source update rate: {SOURCE_UPDATE_HZ:.1f}Hz",
+        f"- Level duration: {LOAD_LEVEL_DURATION_S:.1f}s",
+        f"- Warmup: {WARMUP_S:.1f}s",
+        f"- Measure after: {MEASURE_AFTER_S:.1f}s",
+        f"- CPU limit: {CPU_LIMIT_PERCENT:.1f}%",
+        f"- Period tolerance: target_interval * {PERIOD_TOLERANCE_RATIO:.2f}",
+        f"- Period pass ratio threshold: {PERIOD_PASS_RATIO:.2f}",
+        f"- Server ramp: {', '.join(str(v) for v in SERVER_RAMP)}",
+        f"- Sample Hz ramp: {', '.join(str(v) for v in SAMPLE_HZ_RAMP)}",
+        "",
+        "## Max sustainable sampling rate by server count",
+        "",
+        "| servers | max_pass_hz |",
+        "|---:|---:|",
+    ]
 
+    for summary in results:
+        max_hz = f"{summary.max_pass_hz:.1f}" if summary.max_pass_hz is not None else "none"
+        lines.append(f"| {summary.server_count} | {max_hz} |")
 
-def _write_multi_server_report(
-    *,
-    server_results: tuple[PollLevelResult, ...],
-) -> None:
-    """写出多 server 固定 10Hz 场景的 markdown 报告。"""
+    for summary in results:
+        lines.extend(
+            [
+                "",
+                f"## Server count = {summary.server_count}",
+                "",
+                _report_table(summary.levels),
+            ]
+        )
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    max_server_level = _max_consecutive_passed(server_results)
-
-    report = "\n".join(
-        [
-            "# Source Simulation Load Report",
-            "",
-            "## Config",
-            "",
-            f"- Source update rate: {SOURCE_UPDATE_HZ:.1f}Hz",
-            f"- Load level duration: {LOAD_LEVEL_DURATION_S:.1f}s",
-            f"- Warmup: {WARMUP_S:.1f}s",
-            f"- Measure after: {MEASURE_AFTER_S:.1f}s",
-            f"- Measured duration: {LOAD_LEVEL_DURATION_S - MEASURE_AFTER_S:.1f}s",
-            f"- Stagger mode: {STAGGER_MODE}",
-            f"- Server ramp: {', '.join(str(level) for level in SERVER_RAMP)}",
-            f"- Success rate threshold: {SUCCESS_RATE_RATIO:.2f}",
-            "",
-            "## Scenario: Keep 10Hz, increase server count",
-            "",
-            (
-                f"- Max sustained server count: {max_server_level.server_count} "
-                f"at {max_server_level.target_hz:.1f}Hz"
-                if max_server_level is not None
-                else "- Max sustained server count: none"
-            ),
-            "",
-            _report_table(server_results),
-            "",
-        ]
-    )
-    MULTI_SERVER_REPORT_PATH.write_text(report, encoding="utf-8")
+    REPORT_PATH.write_text("\n".join(lines), encoding="utf-8")
 
 
 @contextmanager
-def _load_test_context(
-    required_server_count: int,
-    *,
-    update_enabled: bool,
-) -> LoadTestContext:
-    """启动 fleet 并准备全量节点列表，供两个测试场景复用。"""
+def _load_test_context(required_server_count: int) -> LoadTestContext:
+    """Start simulator fleet and verify fixed variable count requirement."""
 
-    servers = _build_sources_from_repository()
-    if len(servers) < required_server_count:
+    sources = _build_sources_from_repository()
+    if len(sources) < required_server_count:
         raise AssertionError(
-            f"Expected at least {required_server_count} servers, got {len(servers)}"
+            f"Expected at least {required_server_count} servers, got {len(sources)}"
         )
 
-    selected_servers = servers[:required_server_count]
+    selected_servers = sources[:required_server_count]
+
+    for server in selected_servers:
+        if len(server.points) != VARIABLES_PER_SERVER:
+            raise AssertionError(
+                f"Server {server.connection.name} points={len(server.points)} "
+                f"!= fixed {VARIABLES_PER_SERVER}"
+            )
+
     fleet = SourceSimulatorFleet.create(
         sources=selected_servers,
         update_config=UpdateConfig(
-            enabled=update_enabled,
+            enabled=True,
             interval_seconds=SOURCE_UPDATE_INTERVAL_S,
-            update_count=len(selected_servers[0].points),
+            update_count=VARIABLES_PER_SERVER,
         ),
     )
 
     with fleet:
         time.sleep(WARMUP_S)
-        expected_variable_count = asyncio.run(_variable_count(selected_servers[0]))
-        assert expected_variable_count == len(selected_servers[0].points), (
-            f"Expected {len(selected_servers[0].points)} variables from repository profile, "
-            f"got {expected_variable_count}"
+        live_count = asyncio.run(_variable_count(selected_servers[0]))
+        assert live_count >= VARIABLES_PER_SERVER, (
+            f"Expected at least {VARIABLES_PER_SERVER} live variables, got {live_count}"
         )
+
         yield LoadTestContext(
             servers=selected_servers,
-            expected_variable_count=expected_variable_count,
+            expected_variable_count=VARIABLES_PER_SERVER,
         )
 
 
 @pytest.mark.load
-def test_source_simulation_single_server_polling_load_capacity() -> None:
-    """单 server 全量读取，逐步提高 polling 频率。"""
+def test_source_simulation_sampling_capacity_under_cpu_budget() -> None:
+    """Find max sustainable sampling rate for different server counts."""
 
-    if not POLL_HZ_RAMP:
-        raise AssertionError("SOURCE_SIM_LOAD_POLL_HZ_RAMP must not be empty")
+    required_server_count = max(SERVER_RAMP)
+    with _load_test_context(required_server_count=required_server_count) as context:
+        results = tuple(
+            asyncio.run(_run_server_level(context, server_count=server_count))
+            for server_count in SERVER_RAMP
+        )
 
-    with _load_test_context(required_server_count=1, update_enabled=False) as context:
-        variable_results = asyncio.run(_run_frequency_ramp(context))
+    _write_report(results)
 
-    _write_single_server_report(variable_results=variable_results)
-    max_poll_level = _max_consecutive_passed(variable_results)
-
-    assert variable_results[0].passed, (
-        f"Baseline single-server polling level {variable_results[0].target_hz:.1f}Hz failed; "
-        f"see {SINGLE_SERVER_REPORT_PATH}"
-    )
-    assert max_poll_level is not None, (
-        f"No sustainable single-server polling level found; see {SINGLE_SERVER_REPORT_PATH}"
-    )
-
-
-@pytest.mark.load
-def test_source_simulation_multi_server_polling_load_capacity() -> None:
-    """固定 10Hz 全量读取，逐步增加 server 数量。"""
-
-    if not SERVER_RAMP:
-        raise AssertionError("SOURCE_SIM_LOAD_SERVER_RAMP must not be empty")
-
-    required_server_count = max(1, max(SERVER_RAMP))
-    with _load_test_context(
-        required_server_count=required_server_count,
-        update_enabled=False,
-    ) as context:
-        multi_server_results = asyncio.run(_run_server_ramp(context))
-
-    _write_multi_server_report(server_results=multi_server_results)
-    max_server_level = _max_consecutive_passed(multi_server_results)
-
-    assert multi_server_results[0].passed, (
-        f"Baseline multi-server level {multi_server_results[0].server_count} failed; "
-        f"see {MULTI_SERVER_REPORT_PATH}"
-    )
-    assert max_server_level is not None, (
-        f"No sustainable multi-server level found; see {MULTI_SERVER_REPORT_PATH}"
-    )
+    for summary in results:
+        first_level = summary.levels[0]
+        assert first_level.passed, (
+            f"Baseline failed for server_count={summary.server_count}, "
+            f"target_hz={first_level.target_hz:.1f}; see {REPORT_PATH}"
+        )
+        assert summary.max_pass_hz is not None, (
+            f"No sustainable sampling level found for server_count={summary.server_count}; "
+            f"see {REPORT_PATH}"
+        )

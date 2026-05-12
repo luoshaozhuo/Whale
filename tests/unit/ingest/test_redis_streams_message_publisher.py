@@ -7,8 +7,8 @@ from datetime import UTC, datetime
 from whale.ingest.adapters.message.redis_streams_message_publisher import (
     RedisStreamsMessagePublisher,
 )
+from whale.ingest.ports.message.message_publisher_port import StateSnapshotMessage
 from whale.ingest.runtime.message_pipeline_settings import RedisStreamsMessageSettings
-from whale.ingest.usecases.dtos.state_snapshot_message import StateSnapshotMessage
 
 
 class FakeRedisStreamsClient:

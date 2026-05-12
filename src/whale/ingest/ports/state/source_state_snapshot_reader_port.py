@@ -8,22 +8,34 @@ from typing import Protocol
 
 
 @dataclass(slots=True)
-class CachedSourceState:
-    """Represent one row from the local latest-state cache."""
+class CachedNodeValue:
+    """One cached node value within the LD/source latest-state view."""
 
-    id: int
-    device_code: str
-    model_id: str
-    variable_key: str
-    value: str | None
-    source_observed_at: datetime | None
-    received_at: datetime | None
-    updated_at: datetime | None
-    station_id: str | None = None
-    ingested_at: datetime | None = None
-    freshness_timeout_ms: int | None = None
-    alive_timeout_ms: int | None = None
-    acquisition_mode: str | None = None
+    node_key: str
+    value: str
+    quality: str | None = None
+    source_timestamp: datetime | None = None
+    server_timestamp: datetime | None = None
+    client_sequence: int | None = None
+    updated_at: datetime | None = None
+    attributes: dict[str, object] | None = None
+
+
+@dataclass(slots=True)
+class CachedSourceState:
+    """One LD/source latest-state snapshot."""
+
+    ld_name: str
+    source_id: str
+    availability_status: str
+    unavailable_reason: str | None
+    batch_observed_at: datetime | None
+    client_received_at: datetime | None
+    client_processed_at: datetime | None
+    last_alive_at: datetime | None
+    last_value_updated_at: datetime | None
+    state_updated_at: datetime
+    values: list[CachedNodeValue]
 
 
 class SourceStateSnapshotReaderPort(Protocol):

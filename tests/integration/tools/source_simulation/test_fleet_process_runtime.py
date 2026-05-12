@@ -165,7 +165,7 @@ def test_fleet_stop_is_idempotent_and_cleans_up_processes() -> None:
     fleet.stop()
 
     assert fleet._processes == []
-    assert all(not process.is_alive() for process in processes)
+    assert all(getattr(process, "_closed", False) for process in processes)
 
 
 @pytest.mark.integration
@@ -181,7 +181,7 @@ def test_fleet_context_exit_stops_all_child_processes() -> None:
         assert processes
 
     assert fleet._processes == []
-    assert all(not process.is_alive() for process in processes)
+    assert all(getattr(process, "_closed", False) for process in processes)
 
 
 @pytest.mark.integration

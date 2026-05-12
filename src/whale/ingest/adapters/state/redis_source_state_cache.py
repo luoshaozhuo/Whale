@@ -1,4 +1,18 @@
-"""Redis-backed latest-state cache for ingest."""
+"""Redis-backed latest-state cache for ingest.
+
+本模块提供 Redis 版本的 latest-state cache。
+
+设计约定：
+- Redis 使用一个 hash 保存全部 LD/source 状态；
+- 每个 LD/source 有一个 meta 字段，保存可用性、统一状态时间和链路活性；
+- 每个点位一个 var 字段，保存最新值和点级版本信息；
+- cache 对外以 LD/source 为状态视图单位；
+- batch_observed_at 是 LD 统一状态时间；
+- source_timestamp / server_timestamp / client_sequence 只用于乱序保护和诊断；
+- mark_alive() 只刷新链路活性，不改变点位值；
+- mark_unavailable() 只降级 LD 状态，不删除最后有效值；
+- read_snapshot() 返回 LD 级快照，不兼容旧的单点快照结构。
+"""
 
 from __future__ import annotations
 
@@ -6,15 +20,30 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from whale.ingest.config import CONFIG, RedisStateCacheConfig
+from whale.ingest.ports.state.source_state_cache_port import SourceStateCachePort
 from whale.ingest.ports.state.source_state_snapshot_reader_port import (
+    CachedNodeValue,
     CachedSourceState,
     SourceStateSnapshotReaderPort,
 )
-from whale.ingest.ports.state.source_state_cache_port import SourceStateCachePort
-from whale.ingest.usecases.dtos.acquired_node_state import AcquiredNodeState
+from whale.ingest.usecases.dtos.acquired_node_state import (
+    AcquiredNodeStateBatch,
+    AcquiredNodeValue,
+)
+from whale.shared.utils.time import ensure_utc, max_datetime
+
+
+class RedisPipeline(Protocol):
+    """Minimal Redis pipeline contract used by the Redis state cache."""
+
+    def hset(self, name: str, key: str, value: str) -> object:
+        """Set one hash field in pipeline."""
+
+    def execute(self) -> object:
+        """Execute queued Redis commands."""
 
 
 class RedisHashClient(Protocol):
@@ -23,10 +52,13 @@ class RedisHashClient(Protocol):
     def hset(self, name: str, key: str, value: str) -> int:
         """Set one hash field."""
 
-    def hgetall(self, name: str) -> Mapping[str, str]:
+    def hget(self, name: str, key: str) -> str | bytes | None:
+        """Get one hash field."""
+
+    def hgetall(self, name: str) -> Mapping[str, str] | Mapping[bytes, bytes]:
         """Return all hash fields and values."""
 
-    def pipeline(self) -> object:
+    def pipeline(self) -> RedisPipeline:
         """Return a Redis pipeline for batch operations."""
 
 
@@ -49,6 +81,7 @@ class RedisSourceStateCacheSettings:
         config: RedisStateCacheConfig,
     ) -> RedisSourceStateCacheSettings:
         """Build adapter settings from the ingest module config."""
+
         missing_names = [
             name
             for name, value in (
@@ -66,12 +99,14 @@ class RedisSourceStateCacheSettings:
                 "Missing required Redis state cache environment variables: "
                 + ", ".join(missing_names)
             )
+
         assert config.host is not None
         assert config.port is not None
         assert config.db is not None
         assert config.hash_key is not None
         assert config.station_id is not None
         assert config.decode_responses is not None
+
         return cls(
             host=config.host,
             port=config.port,
@@ -92,90 +127,375 @@ class RedisSourceStateCache(SourceStateCachePort, SourceStateSnapshotReaderPort)
         settings: RedisSourceStateCacheSettings | None = None,
         client: RedisHashClient | None = None,
     ) -> None:
-        """Create the Redis-backed state cache.
+        """Create the Redis-backed state cache."""
 
-        Args:
-            settings: Redis connection and key settings.
-            client: Optional injected Redis client used by tests or callers that
-                manage their own Redis connection lifecycle.
-        """
         if settings is None:
             if not isinstance(CONFIG.state_cache, RedisStateCacheConfig):
                 raise RuntimeError(
-                    "RedisSourceStateCache requires the redis state-cache backend to be configured."
+                    "RedisSourceStateCache requires the redis state-cache backend "
+                    "to be configured."
                 )
             settings = RedisSourceStateCacheSettings.from_config(CONFIG.state_cache)
+
         self._settings = settings
         self._client = client or self._build_client(self._settings)
 
-    def store_many(
+    def update(
         self,
-        model_id: str,
-        acquired_states: list[AcquiredNodeState],
+        *,
+        ld_name: str,
+        batch: AcquiredNodeStateBatch,
     ) -> int:
-        """Upsert latest-state rows into the Redis hash cache (batched pipeline)."""
-        if not acquired_states:
+        """按 batch 刷新一个 LD/source 的 latest-state。"""
+
+        if batch.is_empty():
             return 0
 
-        received_at = datetime.now(tz=UTC)
+        now = datetime.now(tz=UTC)
+        meta_field = self._build_ld_meta_field(ld_name=ld_name)
+        current_meta = self._load_payload(meta_field)
+
+        next_meta = self._build_next_meta_payload(
+            ld_name=ld_name,
+            batch=batch,
+            current_meta=current_meta,
+            now=now,
+        )
+
+        updated_count = 0
         pipe = self._client.pipeline()
-        for state in acquired_states:
-            field = self._build_field_name(
-                station_id=self._settings.station_id,
-                device_code=state.source_id,
-                model_id=model_id,
-                variable_key=state.node_key,
+        pipe.hset(
+            self._settings.hash_key,
+            meta_field,
+            self._dump_payload(next_meta),
+        )
+
+        for value in batch.values:
+            value_field = self._build_variable_field(
+                ld_name=ld_name,
+                node_key=value.node_key,
             )
-            payload = json.dumps(
-                {
-                    "station_id": self._settings.station_id,
-                    "device_code": state.source_id,
-                    "model_id": model_id,
-                    "variable_key": state.node_key,
-                    "value": state.value,
-                    "source_observed_at": state.observed_at.isoformat(),
-                    "received_at": received_at.isoformat(),
-                    "updated_at": received_at.isoformat(),
-                    "ingested_at": received_at.isoformat(),
-                }
+            current_value_payload = self._load_payload(value_field)
+
+            if current_value_payload is not None and not _should_update_value(
+                incoming=value,
+                current_payload=current_value_payload,
+            ):
+                continue
+
+            next_value_payload = self._build_value_payload(
+                ld_name=ld_name,
+                batch=batch,
+                value=value,
+                now=now,
             )
-            pipe.hset(self._settings.hash_key, field, payload)
+            pipe.hset(
+                self._settings.hash_key,
+                value_field,
+                self._dump_payload(next_value_payload),
+            )
+            updated_count += 1
+
         pipe.execute()
-        return len(acquired_states)
+        return updated_count
+
+    def mark_alive(
+        self,
+        *,
+        ld_name: str,
+        observed_at: datetime,
+    ) -> None:
+        """标记一个 LD/source 的采集链路仍然存活。"""
+
+        now = datetime.now(tz=UTC)
+        observed_at = ensure_utc(observed_at)
+        meta_field = self._build_ld_meta_field(ld_name=ld_name)
+        current_meta = self._load_payload(meta_field) or {}
+
+        current_status = str(current_meta.get("availability_status") or "UNKNOWN")
+        next_status = (
+            "VALID"
+            if current_status in {"UNKNOWN", "STALE", "OFFLINE"}
+            else current_status
+        )
+
+        next_meta = {
+            **current_meta,
+            "station_id": self._settings.station_id,
+            "ld_name": ld_name,
+            "source_id": str(current_meta.get("source_id") or ld_name),
+            "availability_status": next_status,
+            "unavailable_reason": None
+            if next_status == "VALID"
+            else current_meta.get("unavailable_reason"),
+            "last_alive_at": _datetime_to_iso(
+                max_datetime(
+                    _parse_datetime(current_meta.get("last_alive_at")),
+                    observed_at,
+                )
+            ),
+            "state_updated_at": now.isoformat(),
+        }
+
+        self._client.hset(
+            self._settings.hash_key,
+            meta_field,
+            self._dump_payload(next_meta),
+        )
+
+    def mark_unavailable(
+        self,
+        *,
+        ld_name: str,
+        status: str,
+        observed_at: datetime,
+        reason: str | None = None,
+    ) -> None:
+        """将一个 LD/source 标记为不可用或降级状态。"""
+
+        now = datetime.now(tz=UTC)
+        observed_at = ensure_utc(observed_at)
+        meta_field = self._build_ld_meta_field(ld_name=ld_name)
+        current_meta = self._load_payload(meta_field) or {}
+
+        next_meta = {
+            **current_meta,
+            "station_id": self._settings.station_id,
+            "ld_name": ld_name,
+            "source_id": str(current_meta.get("source_id") or ld_name),
+            "availability_status": status,
+            "unavailable_reason": reason,
+            "state_updated_at": _datetime_to_iso(
+                max_datetime(
+                    _parse_datetime(current_meta.get("state_updated_at")),
+                    observed_at,
+                )
+            ),
+        }
+
+        pipe = self._client.pipeline()
+        pipe.hset(
+            self._settings.hash_key,
+            meta_field,
+            self._dump_payload(next_meta),
+        )
+
+        raw_rows = self._client.hgetall(self._settings.hash_key)
+        prefix = self._build_variable_prefix(ld_name=ld_name)
+
+        for raw_field, raw_payload in raw_rows.items():
+            field = self._decode_value(raw_field)
+            if not field.startswith(prefix):
+                continue
+
+            payload = json.loads(self._decode_value(raw_payload))
+            payload["availability_status"] = status
+            payload["updated_at"] = now.isoformat()
+            pipe.hset(
+                self._settings.hash_key,
+                field,
+                self._dump_payload(payload),
+            )
+
+        pipe.execute()
 
     def read_snapshot(self) -> list[CachedSourceState]:
-        """Return the full current latest-state snapshot from Redis."""
-        raw_rows = self._client.hgetall(self._settings.hash_key)
-        parsed_rows: list[CachedSourceState] = []
+        """读取全部 LD/source 的 latest-state 快照。"""
 
-        for row_id, (_, raw_payload) in enumerate(
-            sorted(raw_rows.items(), key=lambda item: self._decode_value(item[0])),
-            start=1,
-        ):
+        raw_rows = self._client.hgetall(self._settings.hash_key)
+
+        meta_payloads: dict[str, dict[str, Any]] = {}
+        values_by_ld: dict[str, list[CachedNodeValue]] = {}
+
+        for raw_field, raw_payload in raw_rows.items():
+            field = self._decode_value(raw_field)
             payload = json.loads(self._decode_value(raw_payload))
-            parsed_rows.append(
+
+            if self._is_ld_meta_field(field):
+                ld_name = str(payload["ld_name"])
+                meta_payloads[ld_name] = payload
+                values_by_ld.setdefault(ld_name, [])
+                continue
+
+            if self._is_variable_field(field):
+                ld_name = str(payload["ld_name"])
+                values_by_ld.setdefault(ld_name, []).append(
+                    CachedNodeValue(
+                        node_key=str(payload["node_key"]),
+                        value=str(payload["value"]),
+                        quality=self._optional_str(payload.get("quality")),
+                        source_timestamp=_parse_datetime(
+                            payload.get("source_timestamp")
+                        ),
+                        server_timestamp=_parse_datetime(
+                            payload.get("server_timestamp")
+                        ),
+                        client_sequence=_optional_int(
+                            payload.get("client_sequence")
+                        ),
+                        updated_at=_parse_datetime(payload.get("updated_at")),
+                        attributes=dict(payload.get("attributes") or {}),
+                    )
+                )
+
+        snapshots: list[CachedSourceState] = []
+        for ld_name in sorted(meta_payloads):
+            meta = meta_payloads[ld_name]
+            values = sorted(
+                values_by_ld.get(ld_name, []),
+                key=lambda item: item.node_key,
+            )
+
+            snapshots.append(
                 CachedSourceState(
-                    id=row_id,
-                    station_id=payload.get("station_id"),
-                    device_code=str(payload["device_code"]),
-                    model_id=str(payload["model_id"]),
-                    variable_key=str(payload["variable_key"]),
-                    value=self._optional_str(payload.get("value")),
-                    source_observed_at=self._parse_datetime(payload.get("source_observed_at")),
-                    received_at=self._parse_datetime(payload.get("received_at")),
-                    updated_at=self._parse_datetime(payload.get("updated_at")),
-                    ingested_at=self._parse_datetime(payload.get("ingested_at")),
-                    freshness_timeout_ms=payload.get("freshness_timeout_ms"),
-                    alive_timeout_ms=payload.get("alive_timeout_ms"),
-                    acquisition_mode=payload.get("acquisition_mode"),
+                    ld_name=ld_name,
+                    source_id=str(meta["source_id"]),
+                    availability_status=str(meta["availability_status"]),
+                    unavailable_reason=self._optional_str(
+                        meta.get("unavailable_reason")
+                    ),
+                    batch_observed_at=_parse_datetime(
+                        meta.get("batch_observed_at")
+                    ),
+                    client_received_at=_parse_datetime(
+                        meta.get("client_received_at")
+                    ),
+                    client_processed_at=_parse_datetime(
+                        meta.get("client_processed_at")
+                    ),
+                    last_alive_at=_parse_datetime(meta.get("last_alive_at")),
+                    last_value_updated_at=_parse_datetime(
+                        meta.get("last_value_updated_at")
+                    ),
+                    state_updated_at=(
+                        _parse_datetime(meta.get("state_updated_at"))
+                        or datetime.now(tz=UTC)
+                    ),
+                    values=values,
                 )
             )
 
-        return parsed_rows
+        return snapshots
+
+    def _build_next_meta_payload(
+        self,
+        *,
+        ld_name: str,
+        batch: AcquiredNodeStateBatch,
+        current_meta: dict[str, Any] | None,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """构造下一版 LD meta payload。"""
+
+        current_meta = current_meta or {}
+
+        batch_observed_at = max_datetime(
+            _parse_datetime(current_meta.get("batch_observed_at")),
+            batch.batch_observed_at,
+        )
+        client_received_at = max_datetime(
+            _parse_datetime(current_meta.get("client_received_at")),
+            batch.client_received_at,
+        )
+        client_processed_at = max_datetime(
+            _parse_datetime(current_meta.get("client_processed_at")),
+            batch.client_processed_at,
+        )
+
+        return {
+            **current_meta,
+            "station_id": self._settings.station_id,
+            "ld_name": ld_name,
+            "source_id": batch.source_id,
+            "availability_status": batch.availability_status,
+            "unavailable_reason": None,
+            "batch_observed_at": _datetime_to_iso(batch_observed_at),
+            "client_received_at": _datetime_to_iso(client_received_at),
+            "client_processed_at": _datetime_to_iso(client_processed_at),
+            "last_alive_at": _datetime_to_iso(
+                max_datetime(
+                    _parse_datetime(current_meta.get("last_alive_at")),
+                    batch.client_processed_at,
+                )
+            ),
+            "last_value_updated_at": _datetime_to_iso(
+                max_datetime(
+                    _parse_datetime(current_meta.get("last_value_updated_at")),
+                    batch.client_processed_at,
+                )
+            ),
+            "state_updated_at": now.isoformat(),
+            "attributes": batch.attributes,
+        }
+
+    def _build_value_payload(
+        self,
+        *,
+        ld_name: str,
+        batch: AcquiredNodeStateBatch,
+        value: AcquiredNodeValue,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """构造点位 latest-state payload。"""
+
+        return {
+            "station_id": self._settings.station_id,
+            "ld_name": ld_name,
+            "source_id": batch.source_id,
+            "node_key": value.node_key,
+            "value": value.value,
+            "quality": value.quality,
+            "availability_status": batch.availability_status,
+            "batch_observed_at": batch.batch_observed_at.isoformat(),
+            "client_received_at": batch.client_received_at.isoformat(),
+            "client_processed_at": batch.client_processed_at.isoformat(),
+            "source_timestamp": _datetime_to_iso(value.source_timestamp),
+            "server_timestamp": _datetime_to_iso(value.server_timestamp),
+            "client_sequence": value.client_sequence,
+            "updated_at": now.isoformat(),
+            "attributes": value.attributes,
+        }
+
+    def _load_payload(self, field: str) -> dict[str, Any] | None:
+        """读取一个 Redis hash field 并解析 JSON。"""
+
+        raw_payload = self._client.hget(self._settings.hash_key, field)
+        if raw_payload is None:
+            return None
+
+        return json.loads(self._decode_value(raw_payload))
+
+    def _build_ld_meta_field(self, *, ld_name: str) -> str:
+        """构造 LD/source meta 字段名。"""
+
+        return f"{self._settings.station_id}:ld:{ld_name}:meta"
+
+    def _build_variable_prefix(self, *, ld_name: str) -> str:
+        """构造某个 LD/source 下全部点位字段名前缀。"""
+
+        return f"{self._settings.station_id}:ld:{ld_name}:var:"
+
+    def _build_variable_field(self, *, ld_name: str, node_key: str) -> str:
+        """构造点位 latest-state 字段名。"""
+
+        return f"{self._build_variable_prefix(ld_name=ld_name)}{node_key}"
+
+    def _is_ld_meta_field(self, field: str) -> bool:
+        """判断 Redis hash field 是否为 LD meta 字段。"""
+
+        prefix = f"{self._settings.station_id}:ld:"
+        return field.startswith(prefix) and field.endswith(":meta")
+
+    def _is_variable_field(self, field: str) -> bool:
+        """判断 Redis hash field 是否为点位字段。"""
+
+        prefix = f"{self._settings.station_id}:ld:"
+        return field.startswith(prefix) and ":var:" in field
 
     @staticmethod
     def _build_client(settings: RedisSourceStateCacheSettings) -> RedisHashClient:
         """Build one real Redis client lazily so tests can inject a fake client."""
+
         try:
             from redis import Redis
         except ImportError as exc:
@@ -196,33 +516,82 @@ class RedisSourceStateCache(SourceStateCachePort, SourceStateSnapshotReaderPort)
         )
 
     @staticmethod
-    def _build_field_name(
-        *,
-        station_id: str,
-        device_code: str,
-        model_id: str,
-        variable_key: str,
-    ) -> str:
-        """Build the Redis hash field name for one cached variable state."""
-        return f"{station_id}:{device_code}:{model_id}:{variable_key}"
-
-    @staticmethod
     def _decode_value(value: object) -> str:
         """Decode one Redis field name or value into text."""
+
         if isinstance(value, bytes):
             return value.decode("utf-8")
         return str(value)
 
     @staticmethod
-    def _parse_datetime(value: object) -> datetime | None:
-        """Parse one ISO datetime value if present."""
-        if value is None:
-            return None
-        return datetime.fromisoformat(str(value))
+    def _dump_payload(payload: dict[str, Any]) -> str:
+        """Serialize one payload as compact JSON."""
+
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
 
     @staticmethod
     def _optional_str(value: object) -> str | None:
         """Return one optional string value."""
+
         if value is None:
             return None
         return str(value)
+
+
+def _should_update_value(
+    *,
+    incoming: AcquiredNodeValue,
+    current_payload: dict[str, Any],
+) -> bool:
+    """判断 incoming 点值是否允许覆盖当前点值。"""
+
+    if incoming.server_timestamp is not None:
+        current_server_timestamp = _parse_datetime(
+            current_payload.get("server_timestamp")
+        )
+        if current_server_timestamp is None:
+            return True
+        return incoming.server_timestamp >= current_server_timestamp
+
+    if incoming.client_sequence is not None:
+        current_client_sequence = _optional_int(
+            current_payload.get("client_sequence")
+        )
+        if current_client_sequence is None:
+            return True
+        return incoming.client_sequence >= current_client_sequence
+
+    return True
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    """Parse one ISO datetime value if present."""
+
+    if value is None:
+        return None
+
+    parsed = datetime.fromisoformat(str(value))
+    return ensure_utc(parsed)
+
+
+def _datetime_to_iso(value: datetime | None) -> str | None:
+    """Serialize optional datetime."""
+
+    if value is None:
+        return None
+
+    return ensure_utc(value).isoformat()
+
+
+def _optional_int(value: object) -> int | None:
+    """Parse optional integer value."""
+
+    if value is None:
+        return None
+
+    return int(value)

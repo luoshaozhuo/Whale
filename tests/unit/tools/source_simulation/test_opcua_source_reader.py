@@ -253,8 +253,8 @@ def test_read_uses_read_attributes_in_non_fast_mode_and_keeps_metadata() -> None
     assert batch[0].path == "ns=2;s=WTG_01.LD0.MMXU1.TotW"
     assert batch[0].value == 20.5
     assert batch[0].status == "Good"
-    assert batch[0].source_timestamp == "source-ts"
-    assert batch[0].server_timestamp == "server-ts"
+    assert batch[0].source_timestamp is None
+    assert batch[0].server_timestamp is None
 
 
 @pytest.mark.unit
