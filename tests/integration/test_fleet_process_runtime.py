@@ -91,6 +91,7 @@ async def _node_path_by_key(source: SimulatedSource, point_key: str) -> str:
 
 @pytest.mark.integration
 def test_fleet_context_starts_multiple_servers_and_reader_can_connect() -> None:
+    """Start one process per source and verify each simulator remains readable through the fleet context."""
     sources = (
         _build_source("WTG_01", _get_free_port()),
         _build_source("WTG_02", _get_free_port()),
@@ -108,6 +109,7 @@ def test_fleet_context_starts_multiple_servers_and_reader_can_connect() -> None:
 
 @pytest.mark.integration
 def test_fleet_disabled_updates_do_not_change_values() -> None:
+    """Keep sampled simulator values stable when periodic updates are disabled for the fleet."""
     source = _build_source("WTG_01", _get_free_port())
     fleet = SourceSimulatorFleet.create(
         sources=[source],
@@ -130,6 +132,7 @@ def test_fleet_disabled_updates_do_not_change_values() -> None:
 
 @pytest.mark.integration
 def test_fleet_enabled_updates_change_values_inside_child_process() -> None:
+    """Observe value changes from a child process when simulator updates are enabled."""
     source = _build_source("WTG_01", _get_free_port())
     fleet = SourceSimulatorFleet.create(
         sources=[source],
@@ -152,6 +155,7 @@ def test_fleet_enabled_updates_change_values_inside_child_process() -> None:
 
 @pytest.mark.integration
 def test_fleet_stop_is_idempotent_and_cleans_up_processes() -> None:
+    """Allow repeated stop calls without leaking child process handles."""
     source = _build_source("WTG_01", _get_free_port())
     fleet = SourceSimulatorFleet.create(
         sources=[source],
@@ -170,6 +174,7 @@ def test_fleet_stop_is_idempotent_and_cleans_up_processes() -> None:
 
 @pytest.mark.integration
 def test_fleet_context_exit_stops_all_child_processes() -> None:
+    """Tear down every simulator child process when leaving the fleet context manager."""
     source = _build_source("WTG_01", _get_free_port())
     fleet = SourceSimulatorFleet.create(
         sources=[source],
@@ -186,6 +191,7 @@ def test_fleet_context_exit_stops_all_child_processes() -> None:
 
 @pytest.mark.integration
 def test_fleet_start_failure_raises_runtime_error_and_cleans_started_processes() -> None:
+    """Raise a runtime error and clean partial startup state when one simulator source fails to start."""
     good_source = _build_source("WTG_01", _get_free_port())
     bad_source = _build_source("WTG_02", _get_free_port(), namespace_uri="")
     fleet = SourceSimulatorFleet.create(

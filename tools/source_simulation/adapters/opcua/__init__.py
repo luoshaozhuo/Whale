@@ -7,10 +7,8 @@ from tools.source_simulation.adapters.opcua.source_simulator import (
     OpcUaSourceSimulator,
     OpcUaSourceSimulatorError,
 )
-from tools.source_simulation.adapters.opcua.source_reader import OpcUaSourceReader
 
 __all__ = [
-    "OpcUaSourceReader",
     "OpcUaSourceSimulator",
     "OpcUaSourceSimulatorError",
     "build_nodeset_xml",

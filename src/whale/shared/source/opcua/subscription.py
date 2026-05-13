@@ -15,11 +15,14 @@ import asyncio
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any, List
+from typing import TYPE_CHECKING
 
 from asyncua import Node  # type: ignore[import-untyped]
 from whale.shared.source.models import Batch, NodeValueChange, SubscriptionCallback
-from whale.shared.source.opcua.reader import OpcUaSourceReader
 from contextlib import asynccontextmanager
+
+if TYPE_CHECKING:
+    from whale.shared.source.opcua.reader import OpcUaSourceReader
 
 
 @asynccontextmanager
@@ -153,11 +156,11 @@ class OpcUaSubscriptionHandler:
                 if elapsed_ms > self._max_lag_ms and self._reader:
                     batch: Batch
                     try:
-                        batch = await asyncio.wait_for(
+                        read_batch = await asyncio.wait_for(
                             self._reader.read([], mode="full"),
                             timeout=self._callback_lock_timeout
                         )
-                        batch.availability_status = "STALE"
+                        read_batch.availability_status = "STALE"
                     except Exception as ex:
                         batch = Batch(
                             changes=(),

@@ -99,7 +99,7 @@ def _distinct_values(
 
 @pytest.mark.integration
 def test_simulator_fleet_can_be_assembled_from_repository_data() -> None:
-    """Assemble one simulator fleet for every server-group combination."""
+    """Assemble simulator fleets from repository rows and assert readable nodes plus changing sample values."""
     runtime_repo = SourceRuntimeConfigRepository()
     server_rows = runtime_repo.list_servers(
         group_by=("signal_profile_id", "application_protocol"),

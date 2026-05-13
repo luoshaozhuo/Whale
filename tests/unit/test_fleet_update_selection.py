@@ -48,6 +48,7 @@ def _source(*points: SimulatedPoint) -> SimulatedSource:
 
 @pytest.mark.unit
 def test_create_keeps_external_fleet_api() -> None:
+    """Create a fleet without mutating the external source/update configuration contract."""
     fleet = SourceSimulatorFleet.create(
         sources=[_source(_point("P1"))],
         update_config=UpdateConfig(enabled=False, interval_seconds=1.0),
@@ -59,12 +60,14 @@ def test_create_keeps_external_fleet_api() -> None:
 
 @pytest.mark.unit
 def test_create_rejects_empty_sources() -> None:
+    """Reject fleet creation when no simulator sources are provided."""
     with pytest.raises(ValueError, match="at least one source"):
         SourceSimulatorFleet.create([])
 
 
 @pytest.mark.unit
 def test_select_points_uses_update_count_before_update_ratio() -> None:
+    """Prefer explicit update_count over update_ratio when both selectors are configured."""
     selected = _select_points_for_update(
         [_point("P1"), _point("P2"), _point("P3"), _point("P4")],
         UpdateConfig(interval_seconds=1.0, update_count=2, update_ratio=0.25),
@@ -75,6 +78,7 @@ def test_select_points_uses_update_count_before_update_ratio() -> None:
 
 @pytest.mark.unit
 def test_select_points_uses_ratio_when_count_is_absent() -> None:
+    """Use update_ratio to choose simulator points when update_count is not configured."""
     selected = _select_points_for_update(
         [_point("P1"), _point("P2"), _point("P3"), _point("P4")],
         UpdateConfig(interval_seconds=1.0, update_ratio=0.25),
@@ -85,6 +89,7 @@ def test_select_points_uses_ratio_when_count_is_absent() -> None:
 
 @pytest.mark.unit
 def test_select_points_returns_empty_when_no_points_exist() -> None:
+    """Return an empty immutable selection when the simulator source has no points."""
     selected = _select_points_for_update([], UpdateConfig(interval_seconds=1.0))
 
     assert selected == ()
@@ -92,6 +97,7 @@ def test_select_points_returns_empty_when_no_points_exist() -> None:
 
 @pytest.mark.unit
 def test_normalize_point_data_type_matches_legacy_semantics() -> None:
+    """Normalize simulator point data types onto the runtime types expected by writers."""
     assert _normalize_point_data_type("BOOL") == "BOOLEAN"
     assert _normalize_point_data_type("UINT16") == "INT32"
     assert _normalize_point_data_type("DOUBLE") == "FLOAT64"
@@ -102,6 +108,7 @@ def test_normalize_point_data_type_matches_legacy_semantics() -> None:
 
 @pytest.mark.unit
 def test_build_update_writes_uses_point_key_instead_of_full_path() -> None:
+    """Generate update writes keyed by logical point key so fleet writers can address nodes consistently."""
     writes = _build_update_writes(
         [_point("TotW", "FLOAT64"), _point("TurSt", "BOOLEAN")],
         random.Random(20260508),

@@ -18,7 +18,13 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple, Literal
 
 from asyncua import Client, Node, ua  # type: ignore[import-untyped]
-from whale.shared.source.models import Batch, NodeValueChange, SourceConnectionProfile, SubscriptionCallback
+from whale.shared.source.models import (
+    Batch,
+    NodeValueChange,
+    SourceConnectionProfile,
+    SourceNodeInfo,
+    SubscriptionCallback,
+)
 from whale.shared.source.ports import SourceReaderPort, SourceSubscriptionHandlePort
 from whale.shared.source.opcua.subscription import OpcUaSubscriptionHandler
 
@@ -195,6 +201,16 @@ class OpcUaSourceReader(SourceReaderPort):
         # baseline read 内部调用 callback
         try:
             batch = await self.read(normalized_paths, mode="full")
+            if batch.availability_status == "ERROR":
+                attributes = dict(batch.attributes)
+                attributes["reason"] = "baseline_read_failed"
+                batch = Batch(
+                    changes=batch.changes,
+                    batch_observed_at=batch.batch_observed_at,
+                    client_received_at=batch.client_received_at,
+                    availability_status="ERROR",
+                    attributes=attributes,
+                )
         except Exception as ex:
             batch = Batch(
                 changes=(),
@@ -222,6 +238,40 @@ class OpcUaSourceReader(SourceReaderPort):
         )
         self._subscriptions.append(sub_handle)
         return sub_handle
+
+    async def list_nodes(self) -> tuple[SourceNodeInfo, ...]:
+        """列出当前 server 下全部可读变量节点及其元信息."""
+        _ = self._client_or_raise()
+        nsidx = self._nsidx
+        if nsidx is None:
+            raise RuntimeError("Namespace index not initialized")
+
+        root = await self._resolve_browse_root(nsidx)
+        variable_nodes = await self._collect_variable_nodes(root)
+
+        node_infos: list[SourceNodeInfo] = []
+        for variable_node in variable_nodes:
+            node_path = _node_id_to_string(variable_node)
+            identifier = _extract_string_identifier(node_path)
+            ld_name, ln_name, do_name = _parse_logical_names(identifier)
+            data_type = await self._read_node_data_type(variable_node)
+            node_infos.append(
+                SourceNodeInfo(
+                    node_path=node_path,
+                    data_type=data_type,
+                    ld_name=ld_name,
+                    ln_name=ln_name,
+                    do_name=do_name,
+                )
+            )
+
+        node_infos.sort(key=lambda item: item.node_path)
+        return tuple(node_infos)
+
+    async def list_readable_variable_nodes(self) -> tuple[tuple[str, str], ...]:
+        """列出全部可读变量节点路径及规范化后的数据类型."""
+        node_infos = await self.list_nodes()
+        return tuple((item.node_path, item.data_type) for item in node_infos)
 
     # -----------------------
     # 辅助方法
@@ -264,9 +314,100 @@ class OpcUaSourceReader(SourceReaderPort):
             return None
         return int(await client.get_namespace_index(namespace_uri))
 
+    async def _resolve_browse_root(self, nsidx: int) -> Node:
+        """优先定位 namespace 下业务根节点，找不到时回退到 Objects 根目录."""
+        client = self._client_or_raise()
+        objects_node = client.nodes.objects
+        try:
+            return await objects_node.get_child(f"{nsidx}:WindFarm")
+        except Exception:
+            return objects_node
+
+    async def _collect_variable_nodes(self, root: Node) -> list[Node]:
+        """递归遍历节点树，收集全部变量节点。"""
+        stack: list[Node] = [root]
+        variable_nodes: list[Node] = []
+        while stack:
+            current = stack.pop()
+            try:
+                node_class = await current.read_node_class()
+            except Exception:
+                continue
+
+            if node_class == ua.NodeClass.Variable:
+                variable_nodes.append(current)
+                continue
+
+            try:
+                children = await current.get_children()
+            except Exception:
+                continue
+            stack.extend(children)
+        return variable_nodes
+
+    async def _read_node_data_type(self, node: Node) -> str:
+        """读取并规范化 OPC UA 节点数据类型。"""
+        try:
+            data_type = await node.read_data_type()
+        except Exception:
+            return "UNKNOWN"
+
+        identifier = getattr(data_type, "Identifier", None)
+        if identifier is None:
+            return "UNKNOWN"
+        return _normalize_opcua_data_type(str(identifier))
+
 
 def _raw_datetime(value: object) -> datetime | None:
     """原样返回 datetime，非 datetime 返回 None"""
     if not isinstance(value, datetime):
         return None
     return value
+
+
+def _node_id_to_string(node: Node) -> str:
+    """将 Node 或 NodeId 统一转换为 node id 字符串。"""
+    node_id = getattr(node, "nodeid", node)
+    if hasattr(node_id, "to_string"):
+        return str(node_id.to_string())
+    return str(node_id)
+
+
+def _extract_string_identifier(node_path: str) -> str:
+    """从 ns=2;s=... 节点路径中提取字符串标识段。"""
+    _, _, suffix = node_path.partition(";s=")
+    return suffix or node_path
+
+
+def _parse_logical_names(identifier: str) -> tuple[str, str, str]:
+    """从 OPC UA 字符串标识解析 ld/ln/do 名称。"""
+    parts = [part for part in identifier.split(".") if part]
+    if len(parts) >= 4:
+        return parts[-3], parts[-2], parts[-1]
+    if len(parts) == 3:
+        return parts[0], parts[1], parts[2]
+    if len(parts) == 2:
+        return "", parts[0], parts[1]
+    if len(parts) == 1:
+        return "", "", parts[0]
+    return "", "", ""
+
+
+def _normalize_opcua_data_type(identifier: str) -> str:
+    """将 OPC UA BuiltinType Identifier 映射为稳定字符串类型。"""
+    mapping = {
+        "1": "BOOLEAN",
+        "2": "INT8",
+        "3": "UINT8",
+        "4": "INT16",
+        "5": "UINT16",
+        "6": "INT32",
+        "7": "UINT32",
+        "8": "INT64",
+        "9": "UINT64",
+        "10": "FLOAT32",
+        "11": "FLOAT64",
+        "12": "STRING",
+        "13": "DATETIME",
+    }
+    return mapping.get(identifier, "UNKNOWN")
