@@ -20,7 +20,7 @@ from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionDa
 
 
 _MODULE_PATH = (
-    Path(__file__).resolve().parents[3]
+    Path(__file__).resolve().parents[2]
     / "src/whale/ingest/usecases/SourceAcquisitionUseCase .py"
 )
 _SPEC = importlib.util.spec_from_file_location("whale.ingest.usecases.source_acquisition_use_case", _MODULE_PATH)

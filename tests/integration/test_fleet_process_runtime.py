@@ -7,14 +7,14 @@ import socket
 from typing import cast
 import pytest
 
-from tools.source_simulation.adapters.registry import build_source_reader
-from tools.source_simulation.domain import (
+from tools.source_lab.factory import build_source_reader
+from tools.source_lab.model import (
     SimulatedPoint,
     SimulatedSource,
     SourceConnection,
     UpdateConfig,
 )
-from tools.source_simulation.fleet import SourceSimulatorFleet
+from tools.source_lab.fleet import SourceSimulatorFleet
 
 
 def _get_free_port() -> int:

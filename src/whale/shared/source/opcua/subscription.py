@@ -3,26 +3,30 @@ OpcUaSubscriptionHandler 模块
 ==============================
 
 该模块实现 OPC UA 订阅回调处理器，功能包括：
-1. micro-batch flush 与 baseline read 使用统一 callback
-2. baseline read 不加入 pending 队列，直接 callback
-3. 网络异常 batch、baseline read batch 在 lock 内调用 callback，带超时保护
+1. micro-batch flush 与 health-check read 使用统一 callback
+2. subscription lag 时可对订阅地址执行 health-check read
+3. 网络异常 batch、health-check batch 在 lock 内调用 callback，带超时保护
 4. callback 周期可控，事件循环安全
 5. pending 队列容量根据订阅节点数量动态
 """
 
 from __future__ import annotations
 import asyncio
+import logging
+from contextlib import asynccontextmanager
 from collections import deque
+from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Any, List
 from typing import TYPE_CHECKING
+from typing import Any, List
 
 from asyncua import Node  # type: ignore[import-untyped]
 from whale.shared.source.models import Batch, NodeValueChange, SubscriptionCallback
-from contextlib import asynccontextmanager
 
 if TYPE_CHECKING:
     from whale.shared.source.opcua.reader import OpcUaSourceReader
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -40,7 +44,8 @@ class OpcUaSubscriptionHandler:
 
     Attributes:
         _on_data_change: 下游统一 callback
-        _reader: 所属 reader，用于 baseline read / 异常 flush
+        _reader: 所属 reader，用于 lag health-check read / 异常 flush
+        _addresses: 订阅地址列表，用于 lag health-check read
         _pending_subscription: pending 队列，用于 micro-batch flush
         _callback_lock: 异步锁，保护 callback 调用
         _callback_lock_timeout: callback 超时
@@ -56,6 +61,7 @@ class OpcUaSubscriptionHandler:
         on_data_change: SubscriptionCallback,
         reader: OpcUaSourceReader | None = None,
         subscription_node_count: int | None = None,
+        addresses: Sequence[str] | None = None,
     ) -> None:
         """初始化 OpcUaSubscriptionHandler.
 
@@ -63,11 +69,14 @@ class OpcUaSubscriptionHandler:
             on_data_change: 下游统一 callback
             reader: 所属 reader，用于 baseline read / 异常 flush
             subscription_node_count: 订阅节点数量，用于动态设置 pending 队列容量
+            addresses: 订阅地址列表，用于滞后时执行订阅地址 health-check read
         """
         self._on_data_change = on_data_change
         self._is_async_callback = asyncio.iscoroutinefunction(on_data_change)
         self._reader = reader
+        self._addresses = tuple(addresses or ())
         self._last_received_at: datetime | None = None
+        self._last_lag_handled_at: datetime | None = None
         self._flush_scheduled = False
         self._closed = False
         self._client_sequence = 0
@@ -98,6 +107,7 @@ class OpcUaSubscriptionHandler:
         self._client_sequence += 1
         now = datetime.now(timezone.utc)
         self._last_received_at = now
+        self._last_lag_handled_at = None
 
         change = NodeValueChange(
             node_key=self._node_id_to_string(node),
@@ -135,16 +145,10 @@ class OpcUaSubscriptionHandler:
             client_received_at=now,
             availability_status="VALID",
         )
-
-        async with lock_with_timeout(self._callback_lock, self._callback_lock_timeout):
-            if self._is_async_callback:
-                await self._on_data_change(batch)
-            else:
-                await asyncio.to_thread(self._on_data_change, batch)
-            self._last_received_at = now
+        await self._emit_batch(batch)
 
     async def _network_monitor_loop(self) -> None:
-        """监控网络滞后 / 中断，生成异常 batch 并触发 baseline read flush."""
+        """监控订阅滞后 / 中断，必要时执行 health-check read 并发出异常 batch."""
         try:
             while not self._closed:
                 await asyncio.sleep(self._sleep_interval_s)
@@ -152,37 +156,68 @@ class OpcUaSubscriptionHandler:
                     continue
 
                 now = datetime.now(timezone.utc)
-                elapsed_ms = (now - self._last_received_at).total_seconds() * 1000
+                last_received_at = self._last_received_at
+                elapsed_ms = (now - last_received_at).total_seconds() * 1000
                 if elapsed_ms > self._max_lag_ms and self._reader:
+                    if self._last_lag_handled_at == last_received_at:
+                        continue
                     batch: Batch
                     try:
+                        health_check_addresses = self._addresses
                         read_batch = await asyncio.wait_for(
-                            self._reader.read([], mode="full"),
-                            timeout=self._callback_lock_timeout
+                            self._reader.read(health_check_addresses, mode="full"),
+                            timeout=self._callback_lock_timeout,
                         )
-                        read_batch.availability_status = "STALE"
+                        batch = Batch(
+                            changes=read_batch.changes,
+                            batch_observed_at=read_batch.batch_observed_at,
+                            client_received_at=now,
+                            availability_status="STALE",
+                            attributes={
+                                **read_batch.attributes,
+                                "reason": "subscription_lag_detected",
+                            },
+                        )
+                    except asyncio.CancelledError:
+                        raise
                     except Exception as ex:
+                        failure_reason = (
+                            "health_check_or_baseline_read_failed"
+                            if health_check_addresses
+                            else "baseline_read_failed"
+                        )
                         batch = Batch(
                             changes=(),
                             batch_observed_at=now,
                             client_received_at=now,
                             availability_status="OFFLINE",
                             attributes={
-                                "reason": "baseline_read_failed",
+                                "reason": failure_reason,
                                 "exception": str(ex),
                                 "retry_count": 0,
                             },
                         )
-                    finally:
-                        async with lock_with_timeout(self._callback_lock, self._callback_lock_timeout):
-                            if self._is_async_callback:
-                                await self._on_data_change(batch)
-                            else:
-                                await asyncio.to_thread(self._on_data_change, batch)
-                            self._last_received_at = now
+                    self._last_lag_handled_at = last_received_at
+                    await self._emit_batch(batch)
 
         except asyncio.CancelledError:
-            pass
+            raise
+
+    async def _emit_batch(self, batch: Batch) -> None:
+        """Emit one batch through the configured callback without killing the monitor loop."""
+
+        async with lock_with_timeout(self._callback_lock, self._callback_lock_timeout):
+            try:
+                if self._is_async_callback:
+                    await self._on_data_change(batch)
+                else:
+                    await asyncio.to_thread(self._on_data_change, batch)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("OPC UA subscription callback failed")
+            else:
+                self._last_received_at = batch.client_received_at
 
     async def close(self) -> None:
         """关闭 handler 并清空 pending 队列."""

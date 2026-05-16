@@ -15,7 +15,7 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple, Literal
+from typing import Any, Dict, List, Literal
 
 from asyncua import Client, Node, ua  # type: ignore[import-untyped]
 from whale.shared.source.models import (
@@ -26,6 +26,13 @@ from whale.shared.source.models import (
     SubscriptionCallback,
 )
 from whale.shared.source.ports import SourceReaderPort, SourceSubscriptionHandlePort
+from whale.shared.source.opcua.backends import (
+    AsyncuaPreparedReadPlan,
+    PreparedReadPlan,
+    RawOpcUaReadResult,
+)
+from whale.shared.source.opcua.backends.asyncua_backend import AsyncuaOpcUaClientBackend
+from whale.shared.source.opcua.backends.factory import build_opcua_client_backend
 from whale.shared.source.opcua.subscription import OpcUaSubscriptionHandler
 
 
@@ -65,21 +72,46 @@ class OpcUaSourceReader(SourceReaderPort):
             connection: 连接配置，包括 endpoint、namespace_uri、timeout、参数字典
         """
         self._connection = connection
-        self._client: Client | None = None
-        self._nsidx: int | None = None
-        self._node_cache: Dict[str, Node] = {}
+        self._backend = build_opcua_client_backend(connection)
         self._subscriptions: List[OpcUaSubscriptionHandle] = []
 
     @property
     def endpoint(self) -> str:
         return self._connection.endpoint
 
+    @property
+    def _client(self) -> Client | None:
+        """Compatibility proxy for tests that patch the underlying asyncua client."""
+
+        if isinstance(self._backend, AsyncuaOpcUaClientBackend):
+            return getattr(self._backend, "_client", None)
+        return None
+
+    @_client.setter
+    def _client(self, value: Client | None) -> None:
+        """Compatibility proxy for tests that patch the underlying asyncua client."""
+
+        backend = self._asyncua_backend_or_raise()
+        backend._client = value  # type: ignore[attr-defined]
+
+    @property
+    def _nsidx(self) -> int | None:
+        """Compatibility proxy for tests that patch namespace index directly."""
+
+        if isinstance(self._backend, AsyncuaOpcUaClientBackend):
+            return getattr(self._backend, "_nsidx", None)
+        return None
+
+    @_nsidx.setter
+    def _nsidx(self, value: int | None) -> None:
+        """Compatibility proxy for tests that patch namespace index directly."""
+
+        backend = self._asyncua_backend_or_raise()
+        backend._nsidx = value  # type: ignore[attr-defined]
+
     async def __aenter__(self) -> "OpcUaSourceReader":
         """异步上下文进入，建立 OPC UA 会话."""
-        client = Client(self.endpoint, timeout=self._connection.timeout_seconds)
-        await client.connect()
-        self._client = client
-        self._nsidx = await self._resolve_namespace_index(client)
+        await self._backend.connect()
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
@@ -87,12 +119,8 @@ class OpcUaSourceReader(SourceReaderPort):
         for sub in self._subscriptions:
             await sub.close()
         try:
-            if self._client is not None:
-                await self._client.disconnect()
+            await self._backend.disconnect()
         finally:
-            self._client = None
-            self._nsidx = None
-            self._node_cache.clear()
             self._subscriptions.clear()
 
     async def read(
@@ -110,69 +138,38 @@ class OpcUaSourceReader(SourceReaderPort):
         Returns:
             Batch: 节点状态和时间戳的统一对象
         """
-        client = self._client_or_raise()
-        normalized_paths = self._normalize_node_paths(addresses)
-        nodes = self._get_nodes(normalized_paths)
+        plan = self.prepare_read(addresses)
+        return await self.read_prepared(plan, mode=mode)
 
-        batch_changes: List[NodeValueChange] = []
-        availability_status = "VALID"
-        attributes: Dict[str, Any] = {}
-        retry_count = 0
-        max_retries = 1
+    def prepare_read(self, addresses: Sequence[str]) -> PreparedReadPlan:
+        """Prepare a reusable full-read plan without issuing any network request."""
+        return self._backend.prepare_read(addresses)
 
-        while retry_count <= max_retries:
-            try:
-                if mode == "value_only":
-                    values = await asyncio.wait_for(
-                        client.read_values(nodes),
-                        timeout=self._connection.timeout_seconds
-                    )
-                    for path, val in zip(normalized_paths, values):
-                        batch_changes.append(NodeValueChange(
-                            node_key=path,
-                            value=val,
-                            quality=None,
-                            source_timestamp=None,
-                            server_timestamp=None,
-                            client_sequence=0,
-                            attributes={"value_only": True},
-                        ))
-                else:  # full mode
-                    data_values = await asyncio.wait_for(
-                        client.read_attributes(nodes, attr=ua.AttributeIds.Value),
-                        timeout=self._connection.timeout_seconds
-                    )
-                    for idx, data_value in enumerate(data_values):
-                        batch_changes.append(NodeValueChange(
-                            node_key=normalized_paths[idx],
-                            value=data_value.Value.Value if data_value.Value else None,
-                            quality=str(data_value.StatusCode) if data_value.StatusCode else None,
-                            source_timestamp=_raw_datetime(data_value.SourceTimestamp),
-                            server_timestamp=_raw_datetime(data_value.ServerTimestamp),
-                            client_sequence=0,
-                            attributes={},
-                        ))
-                break
-            except (asyncio.TimeoutError, Exception) as ex:
-                retry_count += 1
-                if retry_count > max_retries:
-                    batch_changes = []
-                    availability_status = "ERROR"
-                    attributes = {
-                        "reason": "timeout" if isinstance(ex, asyncio.TimeoutError) else "read_failed",
-                        "exception": str(ex),
-                        "retry_count": retry_count
-                    }
-                else:
-                    await asyncio.sleep(0.05)  # 短暂退避
+    async def read_prepared(
+        self,
+        plan: PreparedReadPlan,
+        *,
+        mode: Literal["full", "value_only"] = "full",
+    ) -> Batch:
+        """Read with a pre-built plan to avoid hot-path normalization and cache lookup."""
+        if mode == "value_only":
+            self._value_only_backend_or_raise()
+            return await self._read_prepared_values(plan)
 
-        now = datetime.now(tz=timezone.utc)
-        return Batch(
-            changes=tuple(batch_changes),
-            batch_observed_at=now,
-            client_received_at=now,
-            availability_status=availability_status,
-            attributes=attributes,
+        self._full_batch_backend_or_raise()
+
+        raw_result = await self.read_prepared_raw(plan)
+        if not raw_result.ok:
+            return self._build_error_batch(
+                reason=raw_result.error_reason or "read_failed",
+                exception=raw_result.exception,
+                retry_count=raw_result.retry_count,
+            )
+
+        return self._build_full_batch(
+            plan,
+            raw_result.data_values,
+            response_timestamp=raw_result.response_timestamp,
         )
 
     async def start_subscription(
@@ -194,13 +191,18 @@ class OpcUaSourceReader(SourceReaderPort):
         """
         if interval_ms <= 0:
             raise ValueError("interval_ms must be greater than 0")
+        self._subscription_backend_or_raise()
         client = self._client_or_raise()
-        normalized_paths = self._normalize_node_paths(addresses)
-        nodes = self._get_nodes(normalized_paths)
+        plan = self.prepare_read(addresses)
+        if not isinstance(plan, AsyncuaPreparedReadPlan):
+            raise NotImplementedError(
+                "subscription currently requires asyncua prepared nodes"
+            )
+        nodes = plan.nodes
 
-        # baseline read 内部调用 callback
+        # Initial baseline read before handing over to subscription-driven updates.
         try:
-            batch = await self.read(normalized_paths, mode="full")
+            batch = await self.read_prepared(plan, mode="full")
             if batch.availability_status == "ERROR":
                 attributes = dict(batch.attributes)
                 attributes["reason"] = "baseline_read_failed"
@@ -221,7 +223,12 @@ class OpcUaSourceReader(SourceReaderPort):
             )
         await on_data_change(batch)
 
-        handler = OpcUaSubscriptionHandler(on_data_change, reader=self)
+        handler = OpcUaSubscriptionHandler(
+            on_data_change,
+            reader=self,
+            subscription_node_count=len(addresses),
+            addresses=addresses,
+        )
         subscription = await asyncio.wait_for(
             client.create_subscription(interval_ms, handler),
             timeout=self._connection.timeout_seconds
@@ -241,8 +248,9 @@ class OpcUaSourceReader(SourceReaderPort):
 
     async def list_nodes(self) -> tuple[SourceNodeInfo, ...]:
         """列出当前 server 下全部可读变量节点及其元信息."""
+        self._browse_backend_or_raise()
         _ = self._client_or_raise()
-        nsidx = self._nsidx
+        nsidx = self._backend.namespace_index
         if nsidx is None:
             raise RuntimeError("Namespace index not initialized")
 
@@ -276,43 +284,195 @@ class OpcUaSourceReader(SourceReaderPort):
     # -----------------------
     # 辅助方法
     # -----------------------
+    def _asyncua_backend_or_raise(self) -> AsyncuaOpcUaClientBackend:
+        """Return asyncua backend for operations not yet abstracted from it."""
+
+        if not isinstance(self._backend, AsyncuaOpcUaClientBackend):
+            raise NotImplementedError(
+                "This operation currently requires asyncua OPC UA client backend"
+            )
+        return self._backend
+
+    def _full_batch_backend_or_raise(self) -> AsyncuaOpcUaClientBackend:
+        """Require asyncua backend for full Batch construction."""
+
+        if not isinstance(self._backend, AsyncuaOpcUaClientBackend):
+            raise NotImplementedError(
+                "full Batch read requires asyncua backend because open62541 raw polling "
+                "does not expose full DataValue metadata yet"
+            )
+        return self._backend
+
+    def _value_only_backend_or_raise(self) -> AsyncuaOpcUaClientBackend:
+        """Require backend values for value-only Batch construction."""
+
+        if not isinstance(self._backend, AsyncuaOpcUaClientBackend):
+            raise NotImplementedError(
+                "value_only Batch read requires backend values; open62541 runner "
+                "currently returns count-only raw results"
+            )
+        return self._backend
+
+    def _subscription_backend_or_raise(self) -> AsyncuaOpcUaClientBackend:
+        """Require asyncua backend for subscription APIs."""
+
+        if not isinstance(self._backend, AsyncuaOpcUaClientBackend):
+            raise NotImplementedError(
+                "subscription currently requires asyncua client subscription API"
+            )
+        return self._backend
+
+    def _browse_backend_or_raise(self) -> AsyncuaOpcUaClientBackend:
+        """Require asyncua backend for browse/list-nodes APIs."""
+
+        if not isinstance(self._backend, AsyncuaOpcUaClientBackend):
+            raise NotImplementedError(
+                "browse currently requires asyncua node browsing API"
+            )
+        return self._backend
+
     def _client_or_raise(self) -> Client:
         """获取已连接 OPC UA client，未连接则抛出异常."""
-        if self._client is None:
-            raise RuntimeError("OPC UA client is not connected")
-        return self._client
+        return self._asyncua_backend_or_raise().client
 
-    def _get_nodes(self, node_paths: Sequence[str]) -> List[Node]:
-        """获取 Node 对象列表，缓存节点实例."""
+    async def _read_prepared_values(self, plan: PreparedReadPlan) -> Batch:
+        """Read prepared nodes via value_only path with the same retry semantics."""
+        if not isinstance(plan, AsyncuaPreparedReadPlan):
+            raise TypeError("value_only read requires AsyncuaPreparedReadPlan")
         client = self._client_or_raise()
-        nodes: List[Node] = []
-        for path in node_paths:
-            node = self._node_cache.get(path)
-            if node is None:
-                node = client.get_node(path)
-                self._node_cache[path] = node
-            nodes.append(node)
-        return nodes
+        retry_count = 0
+        max_retries = 1
 
-    def _normalize_node_paths(self, node_paths: Sequence[str]) -> Tuple[str, ...]:
-        """标准化节点路径，添加 namespace index 前缀."""
-        return tuple(
-            path if path.startswith(("ns=", "nsu=")) else self._with_namespace_index(path)
-            for path in node_paths
+        while retry_count <= max_retries:
+            try:
+                values = await asyncio.wait_for(
+                    client.read_values(plan.nodes),
+                    timeout=self._connection.timeout_seconds,
+                )
+                changes = tuple(
+                    NodeValueChange(
+                        node_key=node_path,
+                        value=value,
+                        quality=None,
+                        source_timestamp=None,
+                        server_timestamp=None,
+                        client_sequence=0,
+                        attributes={"value_only": True},
+                    )
+                    for node_path, value in zip(plan.node_paths, values)
+                )
+                return self._build_batch(
+                    changes=changes,
+                    availability_status="VALID",
+                    attributes={},
+                )
+            except (asyncio.TimeoutError, Exception) as ex:
+                retry_count += 1
+                if retry_count > max_retries:
+                    return self._build_error_batch(
+                        reason="timeout" if isinstance(ex, asyncio.TimeoutError) else "read_failed",
+                        exception=str(ex),
+                        retry_count=retry_count,
+                    )
+                await asyncio.sleep(0.05)  # 短暂退避
+
+        return self._build_error_batch(reason="read_failed", retry_count=max_retries + 1)
+
+    async def read_prepared_raw(
+        self,
+        plan: PreparedReadPlan,
+    ) -> RawOpcUaReadResult:
+        """Read prepared DataValues without constructing Batch or NodeValueChange."""
+        return await self._backend.read_prepared_raw(plan)
+
+    def _build_full_batch(
+        self,
+        plan: PreparedReadPlan,
+        data_values: Sequence[object],
+        *,
+        response_timestamp: datetime | None,
+    ) -> Batch:
+        """Build a full Batch from prepared plan metadata and raw DataValues."""
+        changes: list[NodeValueChange] = []
+        for node_path, data_value in zip(plan.node_paths, data_values):
+            if not all(
+                hasattr(data_value, attribute)
+                for attribute in (
+                    "Value",
+                    "StatusCode",
+                    "SourceTimestamp",
+                    "ServerTimestamp",
+                )
+            ):
+                raise TypeError(
+                    "full Batch read requires asyncua DataValue metadata"
+                )
+
+            data_value_obj = data_value
+            value_wrapper = getattr(data_value_obj, "Value")
+            changes.append(
+                NodeValueChange(
+                    node_key=node_path,
+                    value=value_wrapper.Value if value_wrapper else None,
+                    quality=(
+                        str(getattr(data_value_obj, "StatusCode"))
+                        if getattr(data_value_obj, "StatusCode")
+                        else None
+                    ),
+                    source_timestamp=_raw_datetime(
+                        getattr(data_value_obj, "SourceTimestamp")
+                    ),
+                    server_timestamp=_raw_datetime(
+                        getattr(data_value_obj, "ServerTimestamp")
+                    ),
+                    client_sequence=0,
+                    attributes={},
+                )
+            )
+        return self._build_batch(
+            changes=tuple(changes),
+            availability_status="VALID",
+            attributes={
+                "response_timestamp": response_timestamp,
+            },
         )
 
-    def _with_namespace_index(self, node_path: str) -> str:
-        """为节点路径添加 namespace index."""
-        if self._nsidx is None:
-            raise RuntimeError("Namespace index not initialized")
-        return f"ns={self._nsidx};{node_path}"
+    def _build_error_batch(
+        self,
+        *,
+        reason: str,
+        exception: str | None = None,
+        retry_count: int,
+    ) -> Batch:
+        """Build a uniform error Batch for read failures."""
+        attributes: Dict[str, Any] = {
+            "reason": reason,
+            "retry_count": retry_count,
+        }
+        if exception is not None:
+            attributes["exception"] = exception
+        return self._build_batch(
+            changes=(),
+            availability_status="ERROR",
+            attributes=attributes,
+        )
 
-    async def _resolve_namespace_index(self, client: Client) -> int | None:
-        """根据 namespace_uri 或 params 获取 namespace index."""
-        namespace_uri = self._connection.namespace_uri or self._connection.params.get("namespace_uri")
-        if not namespace_uri:
-            return None
-        return int(await client.get_namespace_index(namespace_uri))
+    def _build_batch(
+        self,
+        *,
+        changes: tuple[NodeValueChange, ...],
+        availability_status: str,
+        attributes: Dict[str, Any],
+    ) -> Batch:
+        """Build a Batch with consistent timestamps."""
+        now = datetime.now(tz=timezone.utc)
+        return Batch(
+            changes=changes,
+            batch_observed_at=now,
+            client_received_at=now,
+            availability_status=availability_status,
+            attributes=attributes,
+        )
 
     async def _resolve_browse_root(self, nsidx: int) -> Node:
         """优先定位 namespace 下业务根节点，找不到时回退到 Objects 根目录."""

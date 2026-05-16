@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol, Self
+from typing import Literal, Protocol, Self
 
 from whale.shared.source.models import (
     SourceNodeInfo,
@@ -32,7 +32,7 @@ class ReadableSourcePort(Protocol):
         self,
         addresses: Sequence[str],
         *,
-        include_metadata: bool = False,
+        mode: Literal["full", "value_only"] = "full",
     ) -> Batch:
         """按协议层地址读取一批节点，返回统一 Batch 对象。"""
 

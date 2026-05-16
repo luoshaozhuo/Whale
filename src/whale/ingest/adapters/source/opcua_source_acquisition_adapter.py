@@ -32,9 +32,9 @@ from whale.ingest.usecases.dtos.source_acquisition_request import (
 )
 from whale.ingest.usecases.dtos.source_connection_data import SourceConnectionData
 from whale.shared.source.models import (
+    Batch,
+    NodeValueChange,
     SourceConnectionProfile,
-    SourceDataChangeBatch,
-    SourceReadPoint,
 )
 from whale.shared.source.opcua.reader import OpcUaSourceReader
 from whale.shared.source.ports import SourceReaderPort
@@ -97,15 +97,15 @@ class OpcUaSourceAcquisitionAdapter(SourceAcquisitionPort):
         node_paths = self._resolve_node_paths(connection, items)
 
         async with self._build_reader(execution, connection) as reader:
-            points = await reader.read(node_paths, include_metadata=True)
+            batch = await reader.read(node_paths, mode="full")
 
         client_processed_at = datetime.now(tz=UTC)
 
         return self._to_acquired_batch_from_read_points(
             connection=connection,
             items=items,
-            points=list(points),
-            client_received_at=client_received_at,
+            points=list(batch.changes),
+            client_received_at=batch.client_received_at,
             client_processed_at=client_processed_at,
         )
 
@@ -131,7 +131,7 @@ class OpcUaSourceAcquisitionAdapter(SourceAcquisitionPort):
             items=items,
         )
 
-        async def _on_data_change(batch: SourceDataChangeBatch) -> None:
+        async def _on_data_change(batch: Batch) -> None:
             acquired_batch = self._to_acquired_batch_from_data_change_batch(
                 connection=connection,
                 item_resolver=item_resolver,
@@ -221,7 +221,7 @@ class OpcUaSourceAcquisitionAdapter(SourceAcquisitionPort):
         *,
         connection: SourceConnectionData,
         items: list[AcquisitionItemData],
-        points: list[SourceReadPoint],
+        points: list[NodeValueChange],
         client_received_at: datetime,
         client_processed_at: datetime,
     ) -> AcquiredNodeStateBatch:
@@ -256,14 +256,14 @@ class OpcUaSourceAcquisitionAdapter(SourceAcquisitionPort):
         *,
         connection: SourceConnectionData,
         item_resolver: "_NodeItemResolver",
-        batch: SourceDataChangeBatch,
+        batch: Batch,
     ) -> AcquiredNodeStateBatch:
-        """将 reader 的 SourceDataChangeBatch 转换为 AcquiredNodeStateBatch。"""
+        """将 reader 的 Batch 转换为 AcquiredNodeStateBatch。"""
 
         values: list[AcquiredNodeValue] = []
 
         for change in batch.changes:
-            item = item_resolver.resolve(change.path)
+            item = item_resolver.resolve(change.node_key)
             if item is None:
                 continue
 
@@ -271,7 +271,7 @@ class OpcUaSourceAcquisitionAdapter(SourceAcquisitionPort):
                 AcquiredNodeValue(
                     node_key=item.key,
                     value=str(change.value),
-                    quality=change.status,
+                    quality=change.quality,
                     source_timestamp=change.source_timestamp,
                     server_timestamp=change.server_timestamp,
                     client_sequence=change.client_sequence,
@@ -280,13 +280,14 @@ class OpcUaSourceAcquisitionAdapter(SourceAcquisitionPort):
 
         return AcquiredNodeStateBatch(
             source_id=_resolve_source_id(connection),
-            batch_observed_at=batch.client_received_at,
+            batch_observed_at=batch.batch_observed_at,
             client_received_at=batch.client_received_at,
-            client_processed_at=batch.client_processed_at,
+            client_processed_at=datetime.now(tz=UTC),
             values=values,
-            availability_status="VALID",
+            availability_status=batch.availability_status,
             attributes={
                 "acquisition_kind": "subscription_datachange",
+                **batch.attributes,
             },
         )
 

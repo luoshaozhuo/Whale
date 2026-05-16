@@ -1,4 +1,4 @@
-"""Protocol-agnostic source-simulation domain models."""
+"""Data models for source lab simulators and profile tests."""
 
 from __future__ import annotations
 

@@ -14,8 +14,8 @@ import pytest
 from whale.ingest.adapters.config.source_runtime_config_repository import (
     SourceRuntimeConfigRepository,
 )
-from tools.source_simulation.adapters.registry import build_source_reader
-from tools.source_simulation.domain import (
+from tools.source_lab.factory import build_source_reader
+from tools.source_lab.model import (
     SimulatedPoint,
     SimulatedSource,
     SourceNodeInfo,
@@ -23,7 +23,7 @@ from tools.source_simulation.domain import (
     SourceConnection,
     UpdateConfig,
 )
-from tools.source_simulation.fleet import SourceSimulatorFleet
+from tools.source_lab.fleet import SourceSimulatorFleet
 
 RUN_DURATION_SECONDS = 10.0
 UPDATE_INTERVAL_SECONDS = 0.5

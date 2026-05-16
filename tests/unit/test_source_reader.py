@@ -11,7 +11,11 @@ import pytest
 from asyncua import ua  # type: ignore[import-untyped]
 
 from whale.shared.source.models import Batch, SourceConnectionProfile, SourceNodeInfo
-from whale.shared.source.opcua.reader import OpcUaSourceReader, OpcUaSubscriptionHandle
+from whale.shared.source.opcua.reader import (
+    OpcUaSourceReader,
+    OpcUaSubscriptionHandle,
+    RawOpcUaReadResult,
+)
 
 
 class _FakeNodeId:
@@ -150,17 +154,24 @@ def test_read_full_preserves_batch_fields_and_timestamps() -> None:
     """Return a full batch with metadata fields preserved on each NodeValueChange."""
     observed_at = datetime(2026, 5, 12, 8, 30, tzinfo=UTC)
     reader = OpcUaSourceReader(_connection())
-    reader._client = _FakeClient(  # noqa: SLF001
-        data_values=[
-            SimpleNamespace(
-                Value=SimpleNamespace(Value=20.5),
-                StatusCode="Good",
-                SourceTimestamp=observed_at,
-                ServerTimestamp=observed_at,
-            )
-        ]
-    )
+    reader._client = _FakeClient()  # noqa: SLF001
     reader._nsidx = 2  # noqa: SLF001
+
+    async def _fake_read_prepared_raw(plan: object) -> RawOpcUaReadResult:
+        return RawOpcUaReadResult(
+            ok=True,
+            data_values=(
+                SimpleNamespace(
+                    Value=SimpleNamespace(Value=20.5),
+                    StatusCode="Good",
+                    SourceTimestamp=observed_at,
+                    ServerTimestamp=observed_at,
+                ),
+            ),
+            response_timestamp=observed_at,
+        )
+
+    reader.read_prepared_raw = _fake_read_prepared_raw  # type: ignore[method-assign]
 
     batch = asyncio.run(reader.read(["s=WTG_01.LD0.MMXU1.TotW"], mode="full"))
 
@@ -206,17 +217,24 @@ def test_start_subscription_flushes_baseline_read_before_registering_subscriptio
         observed_batches: list[Batch] = []
         observed_at = datetime(2026, 5, 12, 8, 45, tzinfo=UTC)
         reader = OpcUaSourceReader(_connection())
-        reader._client = _FakeClient(  # noqa: SLF001
-            data_values=[
-                SimpleNamespace(
-                    Value=SimpleNamespace(Value=33.0),
-                    StatusCode="Good",
-                    SourceTimestamp=observed_at,
-                    ServerTimestamp=observed_at,
-                )
-            ]
-        )
+        reader._client = _FakeClient()  # noqa: SLF001
         reader._nsidx = 2  # noqa: SLF001
+
+        async def _fake_read_prepared_raw(plan: object) -> RawOpcUaReadResult:
+            return RawOpcUaReadResult(
+                ok=True,
+                data_values=(
+                    SimpleNamespace(
+                        Value=SimpleNamespace(Value=33.0),
+                        StatusCode="Good",
+                        SourceTimestamp=observed_at,
+                        ServerTimestamp=observed_at,
+                    ),
+                ),
+                response_timestamp=observed_at,
+            )
+
+        reader.read_prepared_raw = _fake_read_prepared_raw  # type: ignore[method-assign]
 
         async def _on_data_change(batch: Batch) -> None:
             observed_batches.append(batch)

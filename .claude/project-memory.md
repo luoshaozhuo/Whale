@@ -33,7 +33,7 @@ pytest -m integration                   # integration only
 pytest -m e2e                           # end-to-end (needs Docker infra)
 pytest -m load                          # load tests
 pytest -k "test_name_keyword"           # filter by test name
-pytest tests/unit/tools/source_simulation/test_fleet_update_selection.py  # single file
+pytest tests/unit/tools/source_lab/test_fleet_update_selection.py  # single file
 pytest -x                               # stop on first failure
 ```
 
@@ -94,7 +94,7 @@ src/whale/                    # Core platform
   shared/                     # Cross-cutting: persistence, enums, time utils
   storage/                    # Storage layer (placeholder)
 
-tools/source_simulation/      # OPC UA simulation dev tooling (separate from core)
+tools/source_lab/      # OPC UA simulation dev tooling (separate from core)
 tests/                        # unit/, integration/, e2e/, performance/{endurance,load,stress}/
 config/                       # Config files (currently empty — config is env-var driven)
 scripts/                      # Dev scripts (run_ingest_dev.sh)

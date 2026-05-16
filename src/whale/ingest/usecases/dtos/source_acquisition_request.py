@@ -25,6 +25,7 @@ class AcquisitionExecutionOptions:
 
     subscription_start_interval_ms: int = 0
     subscription_notification_queue_size: int = 1000
+    subscription_notification_max_lag_ms: int = 5000
 
 
 @dataclass(slots=True)

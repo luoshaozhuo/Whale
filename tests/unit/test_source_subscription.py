@@ -171,7 +171,7 @@ def test_network_monitor_flushes_stale_batch_from_baseline_read() -> None:
 
         assert received_batches
         assert received_batches[-1].availability_status == "STALE"
-        assert handler._reader.read_calls[-1] == ([], "full")  # noqa: SLF001
+        assert handler._reader.read_calls[-1] == ((), "full")  # noqa: SLF001
 
         await handler.close()
 

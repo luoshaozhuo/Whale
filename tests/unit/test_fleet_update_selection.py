@@ -6,13 +6,13 @@ import random
 
 import pytest
 
-from tools.source_simulation.domain import (
+from tools.source_lab.model import (
     SimulatedPoint,
     SimulatedSource,
     SourceConnection,
     UpdateConfig,
 )
-from tools.source_simulation.fleet import (
+from tools.source_lab.fleet import (
     SourceSimulatorFleet,
     _build_update_writes,
     _normalize_point_data_type,

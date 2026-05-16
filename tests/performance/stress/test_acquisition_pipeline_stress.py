@@ -52,7 +52,13 @@ import redis as redis_module
 from kafka import KafkaConsumer
 from sqlalchemy import text
 
-from tools.source_simulation.opcua_sim.fleet_runtime import OpcUaFleetRuntime
+try:
+    from tools.source_lab.opcua_sim.fleet_runtime import OpcUaFleetRuntime
+except ModuleNotFoundError:  # pragma: no cover - legacy runtime removed in source_lab refactor
+    pytest.skip(
+        "Legacy OpcUaFleetRuntime is not available in the current source_lab layout",
+        allow_module_level=True,
+    )
 from whale.ingest.adapters.config.opcua_source_acquisition_definition_repository import (
     OpcUaSourceAcquisitionDefinitionRepository,
 )

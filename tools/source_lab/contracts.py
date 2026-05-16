@@ -1,11 +1,15 @@
-"""Shared contracts for source simulators and readers."""
+"""Internal typing contracts for source_lab.
+
+This module is a lightweight tool-side typing helper. It is not a
+production ports/adapters architecture boundary.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Protocol
 
-from tools.source_simulation.domain import SourceNodeInfo, SourceReadPoint
+from tools.source_lab.model import SourceNodeInfo, SourceReadPoint
 
 
 class SourceSimulator(Protocol):

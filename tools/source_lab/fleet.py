@@ -1,9 +1,10 @@
-"""Protocol-agnostic simulator fleet orchestration."""
+"""Simulator fleet lifecycle helpers for source_lab tests and profiles."""
 
 from __future__ import annotations
 
 import math
 import multiprocessing
+import os
 import queue
 import random
 import time
@@ -13,11 +14,29 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from multiprocessing import queues, synchronize
 
-from tools.source_simulation.adapters.registry import build_simulator
-from tools.source_simulation.domain import SimulatedPoint, SimulatedSource, UpdateConfig
+from tools.source_lab.factory import build_simulator
+from tools.source_lab.model import SimulatedPoint, SimulatedSource, UpdateConfig
 
 _STARTUP_TIMEOUT_SECONDS = 10.0
 _READY_POLL_SECONDS = 0.05
+
+
+def _resolve_startup_timeout_seconds() -> float:
+    """Resolve fleet startup timeout from environment with safe fallback."""
+
+    raw_value = os.environ.get("SOURCE_SIM_FLEET_STARTUP_TIMEOUT_S")
+    if raw_value is None or raw_value.strip() == "":
+        return _STARTUP_TIMEOUT_SECONDS
+
+    try:
+        resolved = float(raw_value)
+    except ValueError:
+        return _STARTUP_TIMEOUT_SECONDS
+
+    if resolved <= 0:
+        return _STARTUP_TIMEOUT_SECONDS
+
+    return resolved
 
 
 def _normalize_point_data_type(raw_data_type: str) -> str:
@@ -266,7 +285,8 @@ class SourceSimulatorFleet:
             self._ready_events.append(ready_event)
 
     def _wait_until_ready(self) -> None:
-        deadline = time.monotonic() + _STARTUP_TIMEOUT_SECONDS
+        timeout_seconds = _resolve_startup_timeout_seconds()
+        deadline = time.monotonic() + timeout_seconds
         pending_indices = set(range(len(self._ready_events)))
 
         while pending_indices:
@@ -291,7 +311,18 @@ class SourceSimulatorFleet:
 
             remaining_seconds = deadline - time.monotonic()
             if remaining_seconds <= 0:
-                raise RuntimeError("Timed out waiting for simulator fleet readiness")
+                pending_list = sorted(pending_indices)
+                alive_process_count = sum(
+                    1 for process in self._processes if process.is_alive()
+                )
+                raise RuntimeError(
+                    "Timed out waiting for simulator fleet readiness: "
+                    f"timeout_seconds={timeout_seconds}, "
+                    f"total_sources={len(self.sources)}, "
+                    f"pending_count={len(pending_indices)}, "
+                    f"pending_indices={pending_list[:20]}, "
+                    f"alive_process_count={alive_process_count}"
+                )
 
             for index in tuple(pending_indices):
                 if self._ready_events[index].wait(
