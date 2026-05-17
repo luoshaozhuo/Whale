@@ -1,3 +1,15 @@
+/*
+ * open62541_client_reader.c
+ * -------------------------
+ * 中文说明：
+ * 1. 这是一个基于 open62541 的轻量 OPC UA 客户端读取进程。
+ * 2. 进程通过标准输入接收上层驱动发来的文本命令，例如 PREPARE、READ、
+ *    START_POLL、STOP_POLL、QUIT。
+ * 3. PREPARE 负责把节点文件解析为可复用的读取计划；READ/START_POLL 复用该计划，
+ *    以减少每次读取时的准备开销。
+ * 4. 结果通过标准输出返回，供上层进程统计吞吐、周期、延迟和错误信息。
+ * 5. 本文件重点关注低开销批量读取、轮询调度精度，以及稳定的进程间协议行为。
+ */
 #define _POSIX_C_SOURCE 200809L
 
 #include <open62541/client.h>
@@ -43,6 +55,15 @@ typedef enum PollControlAction {
     POLL_CONTROL_QUIT = 2,
 } PollControlAction;
 
+/**
+ * Creates a heap copy of the input string.
+ *
+ * Args:
+ *     value: Source C string. Must be a valid null-terminated string.
+ *
+ * Returns:
+ *     Newly allocated string on success; NULL on allocation failure.
+ */
 static char *xstrdup(const char *value) {
     size_t len = strlen(value);
     char *copy = (char *)malloc(len + 1);
@@ -53,6 +74,15 @@ static char *xstrdup(const char *value) {
     return copy;
 }
 
+/**
+ * Removes trailing CR/LF characters from an input line.
+ *
+ * Args:
+ *     line: Mutable command line buffer read from stdin.
+ *
+ * Returns:
+ *     None.
+ */
 static void strip_newline(char *line) {
     size_t len = strlen(line);
     while(len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
@@ -61,6 +91,17 @@ static void strip_newline(char *line) {
     }
 }
 
+/**
+ * Splits a command line by tab characters.
+ *
+ * Args:
+ *     line: Mutable input line. Tabs are replaced with '\0' in-place.
+ *     fields: Output array storing pointers to each parsed field.
+ *     max_fields: Maximum number of fields to parse.
+ *
+ * Returns:
+ *     Number of parsed fields.
+ */
 static int split_fields(char *line, char **fields, int max_fields) {
     int count = 0;
     char *cursor = line;
@@ -78,6 +119,15 @@ static int split_fields(char *line, char **fields, int max_fields) {
     return count;
 }
 
+/**
+ * Converts UA DateTime to Unix milliseconds.
+ *
+ * Args:
+ *     value: OPC UA DateTime value in 100ns ticks.
+ *
+ * Returns:
+ *     Unix timestamp in milliseconds; 0 if input is non-positive.
+ */
 static int64_t ua_datetime_to_unix_ms(UA_DateTime value) {
     if(value <= 0) {
         return 0;
@@ -85,6 +135,12 @@ static int64_t ua_datetime_to_unix_ms(UA_DateTime value) {
     return (int64_t)((value - UA_DATETIME_UNIX_EPOCH) / UA_DATETIME_MSEC);
 }
 
+/**
+ * Gets current monotonic time in nanoseconds.
+ *
+ * Returns:
+ *     Monotonic timestamp in ns; 0 if clock query fails.
+ */
 static int64_t monotonic_now_ns(void) {
     struct timespec ts;
     if(clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
@@ -93,6 +149,22 @@ static int64_t monotonic_now_ns(void) {
     return ((int64_t)ts.tv_sec * 1000000000LL) + (int64_t)ts.tv_nsec;
 }
 
+/**
+ * Emits a single-shot READ result line to stdout.
+ *
+ * Args:
+ *     plan_id: Logical plan identifier.
+ *     status: Result status string, typically "OK" or "ERROR".
+ *     value_count: Number of successfully decoded values.
+ *     response_timestamp_ms: Server response timestamp in Unix ms.
+ *     detail: Error or detail string; empty values are normalized to "-".
+ *     request_received_ts_ns: Local timestamp when command was received.
+ *     read_start_ts_ns: Local timestamp just before UA read call.
+ *     read_end_ts_ns: Local timestamp right after UA read call.
+ *
+ * Returns:
+ *     None.
+ */
 static void print_result_line(
     const char *plan_id,
     const char *status,
@@ -119,6 +191,23 @@ static void print_result_line(
     fflush(stdout);
 }
 
+/**
+ * Emits a streaming poll sample result line to stdout.
+ *
+ * Args:
+ *     plan_id: Logical plan identifier.
+ *     seq: Sequence number of the poll sample.
+ *     status: Result status string, typically "OK" or "ERROR".
+ *     value_count: Number of successfully decoded values.
+ *     response_timestamp_ms: Server response timestamp in Unix ms.
+ *     detail: Error or detail string; empty values are normalized to "-".
+ *     scheduled_ts_ns: Local scheduled trigger timestamp for this sample.
+ *     read_start_ts_ns: Local timestamp just before UA read call.
+ *     read_end_ts_ns: Local timestamp right after UA read call.
+ *
+ * Returns:
+ *     None.
+ */
 static void print_stream_result_line(
     const char *plan_id,
     int64_t seq,
@@ -147,6 +236,18 @@ static void print_stream_result_line(
     fflush(stdout);
 }
 
+/**
+ * Clears node resources held by one plan.
+ *
+ * Args:
+ *     plan: Plan object whose internal buffers are released.
+ *
+ * Returns:
+ *     None.
+ *
+ * Notes:
+ *     This function does not free the plan struct itself.
+ */
 static void clear_plan(PreparedPlan *plan) {
     if(plan == NULL) {
         return;
@@ -165,6 +266,15 @@ static void clear_plan(PreparedPlan *plan) {
     plan->node_count = 0;
 }
 
+/**
+ * Frees the entire linked list of prepared plans.
+ *
+ * Args:
+ *     plan: Head of the plan linked list.
+ *
+ * Returns:
+ *     None.
+ */
 static void free_plans(PreparedPlan *plan) {
     while(plan != NULL) {
         PreparedPlan *next = plan->next;
@@ -174,6 +284,16 @@ static void free_plans(PreparedPlan *plan) {
     }
 }
 
+/**
+ * Finds an existing plan by plan_id.
+ *
+ * Args:
+ *     app: Application context containing plan cache.
+ *     plan_id: Identifier to query.
+ *
+ * Returns:
+ *     Pointer to matched plan, or NULL if not found.
+ */
 static PreparedPlan *find_plan(AppContext *app, const char *plan_id) {
     PreparedPlan *plan = app->plans;
     while(plan != NULL) {
@@ -185,6 +305,21 @@ static PreparedPlan *find_plan(AppContext *app, const char *plan_id) {
     return NULL;
 }
 
+/**
+ * Parses or builds a UA_NodeId from input text.
+ *
+ * Args:
+ *     text: Node text. Supports full NodeId forms (ns=..., i=..., s=..., etc.)
+ *         and plain strings.
+ *     namespace_index: Namespace index used when text is a plain string.
+ *     node_id: Output node id.
+ *
+ * Returns:
+ *     UA_STATUSCODE_GOOD on success; corresponding UA error code on failure.
+ *
+ * Notes:
+ *     Plain strings are converted to UA string node ids under namespace_index.
+ */
 static UA_StatusCode parse_or_build_node_id(
     const char *text,
     UA_UInt16 namespace_index,
@@ -207,6 +342,20 @@ static UA_StatusCode parse_or_build_node_id(
     return UA_NodeId_isNull(node_id) ? UA_STATUSCODE_BADOUTOFMEMORY : UA_STATUSCODE_GOOD;
 }
 
+/**
+ * Loads node ids from a text file and builds a read plan payload.
+ *
+ * Args:
+ *     path: Path of node definition file, one node per line.
+ *     namespace_index: Namespace index for plain-string node entries.
+ *     node_ids_out: Output pointer for allocated node id array.
+ *     node_count_out: Output count of parsed node ids.
+ *     error: Output error message buffer.
+ *     error_size: Size of error buffer.
+ *
+ * Returns:
+ *     true if load succeeds; false otherwise.
+ */
 static bool load_plan_nodes(
     const char *path,
     UA_UInt16 namespace_index,
@@ -279,6 +428,17 @@ fail:
     return false;
 }
 
+/**
+ * Handles PREPARE command to create or replace a plan.
+ *
+ * Args:
+ *     app: Application context.
+ *     plan_id: Plan identifier from protocol command.
+ *     file_path: Path to node list file.
+ *
+ * Returns:
+ *     true on success; false on failure.
+ */
 static bool handle_prepare(
     AppContext *app,
     const char *plan_id,
@@ -341,6 +501,21 @@ static bool handle_prepare(
     return true;
 }
 
+/**
+ * Executes one batch read using a prepared plan.
+ *
+ * Args:
+ *     app: Application context containing UA client.
+ *     plan: Prepared node list to read.
+ *     result: Output structure populated with execution details.
+ *
+ * Returns:
+ *     true if service result is good; false otherwise.
+ *
+ * Notes:
+ *     The function builds UA_ReadRequest explicitly to capture local start/end
+ *     timestamps and to separate local preparation errors from server errors.
+ */
 static bool execute_read_plan(
     AppContext *app,
     PreparedPlan *plan,
@@ -383,6 +558,7 @@ static bool execute_read_plan(
         return false;
     }
 
+    /* 组装并发送一次 UA 批量读请求。 */
     UA_ReadRequest request;
     UA_ReadRequest_init(&request);
     request.nodesToRead = nodes_to_read;
@@ -392,6 +568,7 @@ static bool execute_read_plan(
     int64_t read_start_ts_ns = monotonic_now_ns();
     UA_ReadResponse response = UA_Client_Service_read(app->client, request);
     int64_t read_end_ts_ns = monotonic_now_ns();
+    /* 统计返回结果中真正带值的数据项数量。 */
     size_t value_count = 0;
     bool success = response.responseHeader.serviceResult == UA_STATUSCODE_GOOD;
     if(success) {
@@ -416,6 +593,17 @@ static bool execute_read_plan(
     return success;
 }
 
+/**
+ * Handles READ command and emits one RESULT line.
+ *
+ * Args:
+ *     app: Application context.
+ *     plan_id: Plan identifier to execute.
+ *     request_received_ts_ns: Local timestamp when READ command was received.
+ *
+ * Returns:
+ *     true when read succeeds; false when plan is missing or read fails.
+ */
 static bool handle_read(AppContext *app, const char *plan_id, int64_t request_received_ts_ns) {
     PreparedPlan *plan = find_plan(app, plan_id);
     ReadExecutionResult result;
@@ -439,6 +627,16 @@ static bool handle_read(AppContext *app, const char *plan_id, int64_t request_re
     return result.success;
 }
 
+/**
+ * Polls stdin for stream-control commands during polling gaps.
+ *
+ * Args:
+ *     active_plan_id: Plan currently being polled.
+ *     timeout_ms: Max wait time for a command.
+ *
+ * Returns:
+ *     Poll control action indicating none/stop/quit.
+ */
 static PollControlAction poll_for_stream_command(
     const char *active_plan_id,
     int timeout_ms
@@ -493,6 +691,20 @@ static PollControlAction poll_for_stream_command(
     return POLL_CONTROL_NONE;
 }
 
+/**
+ * Waits until scheduled time or until a control command arrives.
+ *
+ * Args:
+ *     active_plan_id: Plan currently being polled.
+ *     scheduled_ts_ns: Target monotonic timestamp for next sample.
+ *
+ * Returns:
+ *     Poll control action indicating none/stop/quit.
+ *
+ * Notes:
+ *     Uses staged waiting strategy: poll stdin when remaining time is long,
+ *     then switch to nanosleep/yield for better scheduling precision.
+ */
 static PollControlAction wait_until_scheduled_or_command(
     const char *active_plan_id,
     int64_t scheduled_ts_ns
@@ -530,6 +742,20 @@ static PollControlAction wait_until_scheduled_or_command(
     }
 }
 
+/**
+ * Runs a plan continuously at target frequency.
+ *
+ * Args:
+ *     app: Application context.
+ *     plan_id: Plan identifier to execute.
+ *     target_hz_text: Target frequency text from command.
+ *     warmup_s_text: Warmup seconds text from command.
+ *     duration_s_text: Formal test duration seconds text from command.
+ *     quit_requested: Output flag set to true when QUIT is received.
+ *
+ * Returns:
+ *     true on normal completion/stop; false on validation or runtime failure.
+ */
 static bool handle_start_poll(
     AppContext *app,
     const char *plan_id,
@@ -595,6 +821,7 @@ static bool handle_start_poll(
     );
     fflush(stdout);
 
+    /* 轮询主循环：按计划时刻触发读取，并在每轮输出流式结果。 */
     while(true) {
         int64_t scheduled_ts_ns = base_time_ns + (seq * interval_ns);
         if(scheduled_ts_ns >= end_time_ns) {
@@ -650,6 +877,15 @@ static bool handle_start_poll(
     return true;
 }
 
+/**
+ * Main command loop that consumes stdin protocol messages.
+ *
+ * Args:
+ *     app: Application context.
+ *
+ * Returns:
+ *     Process exit code.
+ */
 static int run_loop(AppContext *app) {
     char line[MAX_LINE_LEN];
 
@@ -716,6 +952,17 @@ static int run_loop(AppContext *app) {
     return 0;
 }
 
+/**
+ * Process entry point.
+ *
+ * Args:
+ *     argc: Number of command-line arguments.
+ *     argv: Command-line arguments. Expected format:
+ *         argv[1] endpoint, argv[2] namespace_uri_or_dash, argv[3] timeout_ms.
+ *
+ * Returns:
+ *     0 for normal exit; non-zero for argument, connection, or runtime failure.
+ */
 int main(int argc, char **argv) {
     if(argc != 4) {
         fprintf(stderr, "usage: %s <endpoint> <namespace_uri_or_dash> <timeout_ms>\n", argv[0]);
@@ -745,6 +992,7 @@ int main(int argc, char **argv) {
     config->timeout = (UA_UInt32)timeout_ms;
     config->requestedSessionTimeout = (UA_UInt32)(timeout_ms * 2);
 
+    /* 初始化客户端并建立会话连接。 */
     UA_StatusCode connect_status = UA_Client_connect(client, endpoint);
     if(connect_status != UA_STATUSCODE_GOOD) {
         fprintf(stderr, "connect failed: %s\n", UA_StatusCode_name(connect_status));
@@ -776,6 +1024,7 @@ int main(int argc, char **argv) {
     printf("READY\t%u\n", (unsigned)namespace_index);
     fflush(stdout);
 
+    /* 进入 stdin 文本协议循环，直到收到 QUIT 或输入结束。 */
     int exit_code = run_loop(&app);
 
     free_plans(app.plans);

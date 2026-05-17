@@ -1,3 +1,15 @@
+/*
+ * open62541_source_simulator.c
+ * ----------------------------
+ * 中文说明：
+ * 1. 这是一个基于 open62541 的轻量 OPC UA 模拟服务端。
+ * 2. 它从 TSV 配置文件读取 endpoint、namespace、节点定义和更新策略，
+ *    然后在本地启动一个可被测试代码连接的 OPC UA 服务器。
+ * 3. 服务端既支持通过 stdin 接收外部 write 命令主动写值，
+ *    也支持按固定间隔执行内部自动更新，用于压测采集链路。
+ * 4. 地址空间会按逻辑路径自动补齐对象层级，再挂载变量节点。
+ * 5. 本文件重点关注“快速搭建可重复的测试服务器”，而不是通用工业建模能力。
+ */
 #define _POSIX_C_SOURCE 200809L
 
 #include <open62541/plugin/log_stdout.h>
@@ -43,11 +55,13 @@ typedef struct StringSetItem {
 
 static volatile UA_Boolean running = true;
 
+/* 收到终止信号后退出主循环，走正常 shutdown 路径释放资源。 */
 static void stop_handler(int sig) {
     (void)sig;
     running = false;
 }
 
+/* strdup 的本地包装，统一处理分配失败。 */
 static char *xstrdup(const char *value) {
     size_t len = strlen(value);
     char *copy = (char *)malloc(len + 1);
@@ -58,6 +72,7 @@ static char *xstrdup(const char *value) {
     return copy;
 }
 
+/* 解析配置中的布尔文本，兼容常见 true/false 写法。 */
 static bool parse_bool(const char *value) {
     if (value == NULL) {
         return false;
@@ -72,6 +87,7 @@ static bool parse_bool(const char *value) {
            strcmp(value, "ON") == 0;
 }
 
+/* 去掉配置行或 stdin 命令行末尾的换行符。 */
 static void strip_newline(char *line) {
     size_t len = strlen(line);
     while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
@@ -80,6 +96,7 @@ static void strip_newline(char *line) {
     }
 }
 
+/* 按制表符切分 TSV 记录或 stdin 文本命令。 */
 static bool split_fields(char *line, char **fields, int max_fields, int *field_count) {
     int count = 0;
     char *cursor = line;
@@ -100,6 +117,7 @@ static bool split_fields(char *line, char **fields, int max_fields, int *field_c
     return true;
 }
 
+/* 释放整份配置及其节点链表。 */
 static void free_config(AppConfig *config) {
     if (config == NULL) {
         return;
@@ -125,6 +143,7 @@ static void free_config(AppConfig *config) {
     config->nodes = NULL;
 }
 
+/* 解析单条 node 记录并追加到配置链表。 */
 static bool append_node_config(AppConfig *config, char **fields, int field_count) {
     if (field_count != 6) {
         fprintf(stderr, "Invalid node line: expected 6 fields, got %d\n", field_count);
@@ -174,6 +193,7 @@ static bool append_node_config(AppConfig *config, char **fields, int field_count
     return true;
 }
 
+/* 从 TSV 配置文件加载服务端基础配置和节点列表。 */
 static bool load_config(const char *path, AppConfig *config) {
     config->update_enabled = false;
     config->update_interval_ms = 1000;
@@ -265,6 +285,7 @@ static bool load_config(const char *path, AppConfig *config) {
     return true;
 }
 
+/* 从 endpoint 文本中提取端口；解析失败时退回 4840。 */
 static unsigned short parse_endpoint_port(const char *endpoint) {
     const char *colon = strrchr(endpoint, ':');
     if (colon == NULL || *(colon + 1) == '\0') {
@@ -279,6 +300,7 @@ static unsigned short parse_endpoint_port(const char *endpoint) {
     return (unsigned short)port;
 }
 
+/* 以下 string set 用于记录已经创建过的对象层级，避免重复建树。 */
 static bool string_set_contains(StringSetItem *head, const char *value) {
     for (StringSetItem *item = head; item != NULL; item = item->next) {
         if (strcmp(item->value, value) == 0) {
@@ -318,6 +340,7 @@ static void free_string_set(StringSetItem *head) {
     }
 }
 
+/* 使用点号拼接逻辑层级片段，例如 IED.LD.LN。 */
 static char *join_parts(char **parts, int count) {
     size_t len = 0;
 
@@ -343,6 +366,7 @@ static char *join_parts(char **parts, int count) {
     return result;
 }
 
+/* 把类似 WindFarm.WT01.MMXU.TotW 的逻辑路径按点切分。 */
 static int split_node_id_parts(const char *node_id, char **parts, int max_parts) {
     char *copy = xstrdup(node_id);
     if (copy == NULL) {
@@ -388,6 +412,7 @@ static void free_parts(char **parts, int count) {
     }
 }
 
+/* 从变量节点路径反推出其父对象路径。 */
 static char *parent_path_from_node_id(const char *node_id) {
     const char *last_dot = strrchr(node_id, '.');
     if (last_dot == NULL || last_dot == node_id) {
@@ -405,6 +430,7 @@ static char *parent_path_from_node_id(const char *node_id) {
     return parent;
 }
 
+/* 向地址空间添加对象节点，用于构建 IED/LD/LN 层级。 */
 static UA_StatusCode add_object_node(
     UA_Server *server,
     UA_UInt16 ns_idx,
@@ -459,6 +485,7 @@ static UA_StatusCode add_object_node(
     return status;
 }
 
+/* 根据 TSV 中的文本值和数据类型构造 UA_Variant。 */
 static UA_StatusCode build_variant_from_text(
     UA_Variant *variant,
     UA_NodeId *data_type,
@@ -494,6 +521,7 @@ static UA_StatusCode build_variant_from_text(
     return UA_STATUSCODE_BADTYPEMISMATCH;
 }
 
+/* 统一封装节点写值，确保 value/status/timestamp 一起写入。 */
 static UA_StatusCode write_node_value(
     UA_Server *server,
     UA_UInt16 ns_idx,
@@ -536,6 +564,7 @@ static UA_StatusCode write_node_value(
     return status;
 }
 
+/* 把一个变量节点挂到已经建立好的父对象层级下。 */
 static UA_StatusCode add_variable_node(
     UA_Server *server,
     UA_UInt16 ns_idx,
@@ -601,6 +630,10 @@ static UA_StatusCode add_variable_node(
     return status;
 }
 
+/*
+ * 根据变量的逻辑路径确保对象层级存在。
+ * 这里默认根对象是 WindFarm，之后逐级创建 IED、LD、LN。
+ */
 static bool ensure_object_hierarchy(
     UA_Server *server,
     UA_UInt16 ns_idx,
@@ -718,6 +751,7 @@ static bool ensure_object_hierarchy(
     return true;
 }
 
+/* 先建对象层级，再建变量节点，完成整个测试地址空间。 */
 static bool build_address_space(UA_Server *server, UA_UInt16 ns_idx, AppConfig *config) {
     StringSetItem *created_objects = NULL;
 
@@ -741,6 +775,7 @@ static bool build_address_space(UA_Server *server, UA_UInt16 ns_idx, AppConfig *
     return true;
 }
 
+/* 把 stdin 设为非阻塞，避免影响服务端主循环节拍。 */
 static int set_stdin_nonblocking(void) {
     int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
     if (flags == -1) {
@@ -750,6 +785,7 @@ static int set_stdin_nonblocking(void) {
     return fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
 }
 
+/* 检查 stdin 是否有命令待处理。 */
 static bool stdin_has_data(void) {
     fd_set read_fds;
     FD_ZERO(&read_fds);
@@ -763,6 +799,7 @@ static bool stdin_has_data(void) {
     return result > 0 && FD_ISSET(STDIN_FILENO, &read_fds);
 }
 
+/* 处理外部 write 命令，允许测试驱动直接覆盖节点值。 */
 static void process_write_command(
     UA_Server *server,
     UA_UInt16 ns_idx,
@@ -791,6 +828,7 @@ static void process_write_command(
     (void)write_node_value(server, ns_idx, node_id, data_type, value);
 }
 
+/* 读取并执行所有已到达的 stdin 命令。 */
 static void process_stdin_commands(UA_Server *server, UA_UInt16 ns_idx) {
     if (!stdin_has_data()) {
         return;
@@ -834,6 +872,7 @@ static void process_stdin_commands(UA_Server *server, UA_UInt16 ns_idx) {
     }
 }
 
+/* 单调毫秒时钟用于内部更新节拍控制。 */
 static unsigned long monotonic_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -841,6 +880,7 @@ static unsigned long monotonic_ms(void) {
     return ((unsigned long)ts.tv_sec * 1000UL) + ((unsigned long)ts.tv_nsec / 1000000UL);
 }
 
+/* 根据节点数据类型生成下一次内部更新值。 */
 static void build_internal_update_value(
     NodeConfig *node,
     char *buffer,
@@ -871,6 +911,7 @@ static void build_internal_update_value(
     snprintf(buffer, buffer_size, "0");
 }
 
+/* 按配置决定是否执行一轮内部自动更新。 */
 static void maybe_run_internal_update(
     UA_Server *server,
     UA_UInt16 ns_idx,
@@ -903,6 +944,7 @@ static void maybe_run_internal_update(
     }
 }
 
+/* 进程入口：加载配置、启动服务端、循环处理外部命令和内部更新。 */
 int main(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <config.tsv>\n", argv[0]);

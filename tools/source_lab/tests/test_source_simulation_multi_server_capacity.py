@@ -1,26 +1,173 @@
+# mypy: disable-error-code=import-untyped
+# mypy: disable-error-code=import-untyped
 """Multi-server OPC UA polling capacity test.
 
 Purpose:
-- Find the sustainable boundary for a selected simulator backend and client backend.
+- Find the sustainable boundary of the Python-scheduled OPC UA polling path.
 - Scan server_count and sampling rate (Hz) with configurable start/step/max.
-- Keep production read path intact: OpcUaSourceReader -> prepare_read -> read_prepared_raw.
-- Do not run pyinstrument here; this file is for capacity only.
+- Keep the production read path intact:
+  OpcUaSourceReader -> prepare_read -> read_prepared_raw.
+- Use global stagger scheduling across all sources before process partitioning.
+- Stop the current Hz ramp on FLAKY/FAIL/SKIP when configured, then continue
+  with the next server_count.
+- Do not run pyinstrument here; this file is for capacity scanning only.
 
-Typical run:
-    SOURCE_SIM_OPCUA_BACKEND=open62541 \
-    SOURCE_SIM_OPCUA_CLIENT_BACKEND=open62541 \
-    SOURCE_SIM_LOAD_PROCESS_COUNT=1 \
-    SOURCE_SIM_LOAD_COROUTINES_PER_PROCESS=10 \
-    SOURCE_SIM_LOAD_SERVER_COUNT_START=1 \
-    SOURCE_SIM_LOAD_SERVER_COUNT_STEP=4 \
-    SOURCE_SIM_LOAD_SERVER_COUNT_MAX=30 \
-    SOURCE_SIM_LOAD_HZ_START=5 \
-    SOURCE_SIM_LOAD_HZ_STEP=5 \
-    SOURCE_SIM_LOAD_HZ_MAX=30 \
-    SOURCE_SIM_LOAD_LEVEL_DURATION_S=30 \
-    SOURCE_SIM_LOAD_WARMUP_S=10 \
-    SOURCE_SIM_LOAD_SOURCE_UPDATE_ENABLED=true \
-    SOURCE_SIM_LOAD_SOURCE_UPDATE_HZ=10 \
+Important:
+- This test does NOT use C runner internal polling.
+- SOURCE_SIM_PROFILE_SCHEDULER_MODE is ignored by this file.
+- For C runner internal polling, use:
+  tools/source_lab/tests/test_source_simulation_multi_server_profile.py
+  with SOURCE_SIM_PROFILE_SCHEDULER_MODE=open62541_runner_poll.
+
+Primary environment variables:
+
+Backend:
+    SOURCE_SIM_OPCUA_BACKEND
+        Simulator backend. Typical value: open62541.
+
+    SOURCE_SIM_OPCUA_CLIENT_BACKEND
+        OPC UA client backend. Typical value: open62541.
+
+Process / worker model:
+    SOURCE_SIM_LOAD_PROCESS_COUNT
+        Number of Python worker processes.
+        1 means single-process asyncio scheduling.
+        >1 means sources are partitioned round-robin across worker processes.
+
+    SOURCE_SIM_LOAD_COROUTINES_PER_PROCESS
+        Optional cap for readers per process.
+        0 means unlimited.
+        If >0 and server_count exceeds
+        PROCESS_COUNT * COROUTINES_PER_PROCESS, the level is skipped.
+
+Capacity scan range:
+    SOURCE_SIM_LOAD_SERVER_COUNT_START
+    SOURCE_SIM_LOAD_SERVER_COUNT_STEP
+    SOURCE_SIM_LOAD_SERVER_COUNT_MAX
+
+    SOURCE_SIM_LOAD_HZ_START
+    SOURCE_SIM_LOAD_HZ_STEP
+    SOURCE_SIM_LOAD_HZ_MAX
+
+Single-point compatibility aliases:
+    SOURCE_SIM_LOAD_SERVER_COUNT
+        Alias for SOURCE_SIM_LOAD_SERVER_COUNT_START and default max.
+
+    SOURCE_SIM_LOAD_TARGET_HZ
+        Alias for SOURCE_SIM_LOAD_HZ_START and default max.
+
+Timing:
+    SOURCE_SIM_LOAD_LEVEL_DURATION_S
+        Measurement duration per level.
+
+    SOURCE_SIM_LOAD_WARMUP_S
+        Warmup duration before measurement.
+
+    SOURCE_SIM_LOAD_READ_TIMEOUT_S
+        Per-read timeout.
+
+Source update:
+    SOURCE_SIM_LOAD_SOURCE_UPDATE_ENABLED
+        Whether simulator values are updated during the load test.
+        For pure polling capacity, normally set false.
+
+    SOURCE_SIM_LOAD_SOURCE_UPDATE_HZ
+        Update frequency when source update is enabled.
+
+Concurrency:
+    SOURCE_SIM_LOAD_MAX_CONCURRENT_READS
+    SOURCE_SIM_LOAD_MAX_CONCURRENT_READS_PER_WORKER
+        Max concurrent reads per worker.
+        The *_PER_WORKER variable is accepted as a compatibility name.
+
+Pass / fail criteria:
+    SOURCE_SIM_LOAD_PERIOD_MAX_TOLERANCE_RATIO
+    SOURCE_SIM_LOAD_PERIOD_TOLERANCE_RATIO
+        Maximum allowed response timestamp period tolerance.
+        Default: 0.2.
+
+    SOURCE_SIM_LOAD_PERIOD_MEAN_ERROR_RATIO
+        Maximum allowed mean period error ratio.
+        Default: 0.05.
+
+    SOURCE_SIM_LOAD_FAIL_CONFIRM_RUNS
+        Retry count for confirming a failing level.
+        If the first attempt fails but a later attempt passes, status is FLAKY.
+
+    SOURCE_SIM_LOAD_ACCEPT_FLAKY_AS_PASS
+        Whether FLAKY counts as accepted in max-pass summary.
+        For stable capacity discovery, normally set false.
+
+    SOURCE_SIM_LOAD_STOP_HZ_RAMP_ON_FIRST_FAIL
+        If true, stop the current Hz ramp on FLAKY/FAIL/SKIP and continue
+        with the next server_count.
+        Default: true.
+
+Diagnostics:
+    SOURCE_SIM_LOAD_TOP_GAP_COUNT
+        Number of largest response-period gaps to print.
+
+    SOURCE_SIM_LOAD_VERBOSE_ERRORS
+        Print full exception details for fleet startup failures.
+
+Fleet / port allocation:
+    SOURCE_SIM_FLEET_STARTUP_TIMEOUT_S
+    SOURCE_SIM_FLEET_STOP_GRACE_S
+    SOURCE_SIM_PORT_START
+    SOURCE_SIM_PORT_END
+
+Typical single-process capacity scan:
+
+    SOURCE_SIM_OPCUA_BACKEND=open62541 \\
+    SOURCE_SIM_OPCUA_CLIENT_BACKEND=open62541 \\
+    SOURCE_SIM_LOAD_PROCESS_COUNT=1 \\
+    SOURCE_SIM_LOAD_COROUTINES_PER_PROCESS=0 \\
+    SOURCE_SIM_LOAD_SERVER_COUNT_START=1 \\
+    SOURCE_SIM_LOAD_SERVER_COUNT_STEP=10 \\
+    SOURCE_SIM_LOAD_SERVER_COUNT_MAX=100 \\
+    SOURCE_SIM_LOAD_HZ_START=10 \\
+    SOURCE_SIM_LOAD_HZ_STEP=10 \\
+    SOURCE_SIM_LOAD_HZ_MAX=100 \\
+    SOURCE_SIM_LOAD_LEVEL_DURATION_S=30 \\
+    SOURCE_SIM_LOAD_WARMUP_S=10 \\
+    SOURCE_SIM_LOAD_SOURCE_UPDATE_ENABLED=false \\
+    SOURCE_SIM_LOAD_MAX_CONCURRENT_READS=16 \\
+    SOURCE_SIM_LOAD_PERIOD_MAX_TOLERANCE_RATIO=0.2 \\
+    SOURCE_SIM_LOAD_PERIOD_MEAN_ERROR_RATIO=0.05 \\
+    SOURCE_SIM_LOAD_FAIL_CONFIRM_RUNS=2 \\
+    SOURCE_SIM_LOAD_ACCEPT_FLAKY_AS_PASS=false \\
+    SOURCE_SIM_LOAD_STOP_HZ_RAMP_ON_FIRST_FAIL=true \\
+    SOURCE_SIM_LOAD_TOP_GAP_COUNT=10 \\
+    SOURCE_SIM_FLEET_STARTUP_TIMEOUT_S=180 \\
+    SOURCE_SIM_PORT_START=52000 \\
+    SOURCE_SIM_PORT_END=65000 \\
+    python -m pytest tools/source_lab/tests/test_source_simulation_multi_server_capacity.py -s -v
+
+Typical multi-process capacity scan:
+
+    SOURCE_SIM_OPCUA_BACKEND=open62541 \\
+    SOURCE_SIM_OPCUA_CLIENT_BACKEND=open62541 \\
+    SOURCE_SIM_LOAD_PROCESS_COUNT=5 \\
+    SOURCE_SIM_LOAD_COROUTINES_PER_PROCESS=15 \\
+    SOURCE_SIM_LOAD_SERVER_COUNT_START=1 \\
+    SOURCE_SIM_LOAD_SERVER_COUNT_STEP=10 \\
+    SOURCE_SIM_LOAD_SERVER_COUNT_MAX=75 \\
+    SOURCE_SIM_LOAD_HZ_START=10 \\
+    SOURCE_SIM_LOAD_HZ_STEP=10 \\
+    SOURCE_SIM_LOAD_HZ_MAX=100 \\
+    SOURCE_SIM_LOAD_LEVEL_DURATION_S=30 \\
+    SOURCE_SIM_LOAD_WARMUP_S=10 \\
+    SOURCE_SIM_LOAD_SOURCE_UPDATE_ENABLED=false \\
+    SOURCE_SIM_LOAD_MAX_CONCURRENT_READS=16 \\
+    SOURCE_SIM_LOAD_PERIOD_MAX_TOLERANCE_RATIO=0.2 \\
+    SOURCE_SIM_LOAD_PERIOD_MEAN_ERROR_RATIO=0.05 \\
+    SOURCE_SIM_LOAD_FAIL_CONFIRM_RUNS=2 \\
+    SOURCE_SIM_LOAD_ACCEPT_FLAKY_AS_PASS=false \\
+    SOURCE_SIM_LOAD_STOP_HZ_RAMP_ON_FIRST_FAIL=true \\
+    SOURCE_SIM_LOAD_TOP_GAP_COUNT=10 \\
+    SOURCE_SIM_FLEET_STARTUP_TIMEOUT_S=180 \\
+    SOURCE_SIM_PORT_START=52000 \\
+    SOURCE_SIM_PORT_END=65000 \\
     python -m pytest tools/source_lab/tests/test_source_simulation_multi_server_capacity.py -s -v
 """
 
@@ -169,7 +316,10 @@ PERIOD_MEAN_ERROR_RATIO = _env_float("SOURCE_SIM_LOAD_PERIOD_MEAN_ERROR_RATIO", 
 FAIL_CONFIRM_RUNS = _env_int("SOURCE_SIM_LOAD_FAIL_CONFIRM_RUNS", 2)
 TOP_GAP_COUNT = _env_int("SOURCE_SIM_LOAD_TOP_GAP_COUNT", 5)
 ACCEPT_FLAKY_AS_PASS = _env_flag("SOURCE_SIM_LOAD_ACCEPT_FLAKY_AS_PASS", False)
-STOP_SERVER_RAMP_ON_FIRST_FAIL = _env_flag("SOURCE_SIM_LOAD_STOP_SERVER_RAMP_ON_FIRST_FAIL", True)
+STOP_HZ_RAMP_ON_FIRST_FAIL = _env_flag(
+    "SOURCE_SIM_LOAD_STOP_HZ_RAMP_ON_FIRST_FAIL",
+    True,
+)
 FLEET_STOP_GRACE_S = _env_float("SOURCE_SIM_FLEET_STOP_GRACE_S", 0.2)
 VERBOSE_ERRORS = _env_flag("SOURCE_SIM_LOAD_VERBOSE_ERRORS", False)
 
@@ -357,13 +507,17 @@ async def _run_worker_level(
     measure_start_at = loop.time() + WARMUP_S
     measure_end_at = measure_start_at + LOAD_LEVEL_DURATION_S
 
-    def make_result_handler(reader_index: int):
+    def make_result_handler(
+        reader_index: int,
+    ) -> Callable[[PollingResultEvent[TickResult]], Awaitable[None]]:
         async def on_result(event: PollingResultEvent[TickResult]) -> None:
             if measure_start_at <= event.finished_at <= measure_end_at:
                 _record_tick(reader_stats[reader_index], event.result)
         return on_result
 
-    def make_error_handler(reader_index: int):
+    def make_error_handler(
+        reader_index: int,
+    ) -> Callable[[PollingErrorEvent], Awaitable[None]]:
         async def on_error(event: PollingErrorEvent) -> None:
             if measure_start_at <= event.finished_at <= measure_end_at:
                 _record_tick(
@@ -603,12 +757,13 @@ def _run_level_once(
 ) -> LevelMetrics:
     specs = _build_source_specs(sources, target_hz=target_hz)
     partitions = _partition_specs_round_robin(specs, process_count=PROCESS_COUNT)
+    worker_stats: list[WorkerRawStats]
     if PROCESS_COUNT == 1:
-        worker_stats = (
+        worker_stats = [
             asyncio.run(
                 _run_worker_level(partitions[0], target_hz=target_hz, worker_index=0)
-            ),
-        )
+            )
+        ]
     else:
         with ProcessPoolExecutor(
             max_workers=PROCESS_COUNT,
@@ -619,7 +774,7 @@ def _run_level_once(
                 for index, bucket in enumerate(partitions)
                 if bucket
             ]
-            worker_stats = tuple(future.result() for future in futures)
+            worker_stats = [future.result() for future in futures]
     return _build_metrics(worker_stats, server_count=len(sources), target_hz=target_hz)
 
 
@@ -708,7 +863,7 @@ def _run_confirmed_level(
 
 
 @contextmanager
-def _started_fleet(sources: tuple[SimulatedSource, ...]):
+def _started_fleet(sources: tuple[SimulatedSource, ...]) -> Iterator[None]:
     vars_per_server = len(sources[0].points)
     update_interval_s = 1.0 / SOURCE_UPDATE_HZ if SOURCE_UPDATE_HZ > 0 else 1.0
     fleet = SourceSimulatorFleet.create(
@@ -750,6 +905,15 @@ def _print_header() -> None:
     print(f"fail_confirm_runs={FAIL_CONFIRM_RUNS}")
     print(f"top_gap_count={TOP_GAP_COUNT}")
     print(f"accept_flaky_as_pass={ACCEPT_FLAKY_AS_PASS}")
+    print(f"stop_hz_ramp_on_first_fail={STOP_HZ_RAMP_ON_FIRST_FAIL}")
+    print(
+        "fail_behavior="
+        + (
+            "stop current hz ramp on FLAKY/FAIL/SKIP and continue next server_count"
+            if STOP_HZ_RAMP_ON_FIRST_FAIL
+            else "continue current hz ramp after FLAKY/FAIL/SKIP"
+        )
+    )
     print("-" * 116)
     print(
         f"{'srv':>4} {'hz':>6} {'period':>8} {'bad':>5} "
@@ -865,7 +1029,6 @@ def test_source_simulation_multi_server_capacity() -> None:
             host=base_source.connection.host,
         )
         sources = build_multi_sources(base_source, server_count=server_count, ports=ports)
-        server_has_accepted = False
         try:
             with _started_fleet(sources):
                 for target_hz in _iter_float_ramp(HZ_START, HZ_STEP, HZ_MAX):
@@ -873,14 +1036,14 @@ def test_source_simulation_multi_server_capacity() -> None:
                     all_results.append(result)
                     _print_level(result)
                     _print_top_gaps(result)
-                    if result.final_status == "PASS" or (
-                        ACCEPT_FLAKY_AS_PASS and result.final_status == "FLAKY"
+                    if result.final_status == "PASS":
+                        continue
+                    if result.final_status == "FLAKY" and ACCEPT_FLAKY_AS_PASS:
+                        continue
+                    if (
+                        result.final_status in {"FLAKY", "FAIL", "SKIP"}
+                        and STOP_HZ_RAMP_ON_FIRST_FAIL
                     ):
-                        server_has_accepted = True
-                        continue
-                    if result.final_status == "FLAKY":
-                        continue
-                    if result.final_status in {"FAIL", "SKIP"}:
                         break
         except Exception as exc:
             port_span = f"{ports[0]}-{ports[-1]}" if ports else "n/a"
@@ -894,8 +1057,6 @@ def test_source_simulation_multi_server_capacity() -> None:
             _print_level(result)
             if VERBOSE_ERRORS:
                 print(exc)
-        if STOP_SERVER_RAMP_ON_FIRST_FAIL and not server_has_accepted:
-            break
 
     _print_summary(all_results)
     assert all_results, "No capacity level was executed"
