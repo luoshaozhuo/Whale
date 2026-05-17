@@ -6,9 +6,8 @@ import os
 from collections.abc import Sequence
 from typing import TypeAlias
 
-from whale.shared.source.models import SourceConnectionProfile
-from whale.shared.source.opcua.reader import OpcUaSourceReader
-from tools.source_lab.opcua.address_space import build_endpoint
+from whale.shared.source.models import SourceConnectionProfile  # type: ignore[import-untyped]
+from whale.shared.source.opcua.reader import OpcUaSourceReader  # type: ignore[import-untyped]
 from tools.source_lab.opcua.asyncua_source_simulator import (
     AsyncuaSourceSimulator,
 )
@@ -141,8 +140,10 @@ def build_source_reader(source_connection: object) -> SourceReader:
     if protocol != "opcua":
         raise ValueError(f"Unsupported source reader type: {getattr(source_connection, 'protocol')}")
 
+    transport = str(getattr(source_connection, "transport", "tcp")).strip().lower()
+    scheme = "opc.tcp" if transport == "tcp" else f"opc.{transport}"
     profile = SourceConnectionProfile(
-        endpoint=build_endpoint(source_connection),
+        endpoint=f"{scheme}://{getattr(source_connection, 'host')}:{getattr(source_connection, 'port')}",
         namespace_uri=getattr(source_connection, "namespace_uri", None),
         timeout_seconds=_resolve_timeout_seconds(getattr(source_connection, "timeouts", None)),
         params=dict(getattr(source_connection, "params", {})),

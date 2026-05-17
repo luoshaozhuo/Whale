@@ -65,7 +65,7 @@ def _prepared_backend_and_plan() -> tuple[Open62541OpcUaClientBackend, Open62541
 def test_resolve_client_runner_path_uses_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     """Environment override should control the runner executable path."""
 
-    override = Path("/tmp/custom/open62541_client_reader").resolve()
+    override = Path("/tmp/custom/open62541_client_runner").resolve()
     monkeypatch.setenv("WHALE_OPEN62541_CLIENT_RUNNER_PATH", str(override))
 
     assert resolve_client_runner_path() == override
@@ -75,12 +75,12 @@ def test_resolve_client_runner_path_uses_env_override(monkeypatch: pytest.Monkey
 def test_connect_missing_runner_reports_absolute_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Missing runner errors should include the resolved path and build hint."""
 
-    missing_runner = Path("/tmp/does-not-exist/open62541_client_reader").resolve()
+    missing_runner = Path("/tmp/does-not-exist/open62541_client_runner").resolve()
     monkeypatch.setenv("WHALE_OPEN62541_CLIENT_RUNNER_PATH", str(missing_runner))
 
     backend = Open62541OpcUaClientBackend(_connection())
 
-    with pytest.raises(RuntimeError, match="open62541_client_reader"):
+    with pytest.raises(RuntimeError, match="open62541_client_runner"):
         asyncio.run(backend.connect())
 
     with pytest.raises(RuntimeError, match=str(missing_runner)):

@@ -107,8 +107,8 @@ def resolve_client_runner_path() -> Path:
         return Path(env_path).expanduser().resolve()
 
     source_lab_root = Path(__file__).resolve().parents[6] / "tools" / "source_lab"
-    runner_name = "open62541_client_reader.exe" if os.name == "nt" else "open62541_client_reader"
-    return source_lab_root / "opcua" / "native" / "build" / runner_name
+    suffix = ".exe" if os.name == "nt" else ""
+    return source_lab_root / "native" / "build" / f"open62541_client_runner{suffix}"
 
 
 def _normalize_open62541_node_id(address: str) -> str:
@@ -190,10 +190,10 @@ class Open62541OpcUaClientBackend:
         if not runner_path.exists():
             raise RuntimeError(
                 "open62541 client runner executable does not exist: "
-                f"{runner_path}. Build `open62541_client_reader` first with CMake."
+                f"{runner_path}. Build `open62541_client_runner` first with CMake."
             )
 
-        self._temp_dir = tempfile.TemporaryDirectory(prefix="open62541_client_reader_")
+        self._temp_dir = tempfile.TemporaryDirectory(prefix="open62541_client_runner_")
         timeout_ms = max(1, round(self._connection.timeout_seconds * 1000.0))
         namespace_uri = self._connection.namespace_uri or "-"
 

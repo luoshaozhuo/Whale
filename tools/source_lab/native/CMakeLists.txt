@@ -9,7 +9,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 find_package(open62541 REQUIRED)
 
 add_executable(open62541_source_simulator
-    open62541_source_simulator.c
+    open62541/open62541_simulator_server.c
 )
 
 target_link_libraries(open62541_source_simulator
@@ -17,11 +17,11 @@ target_link_libraries(open62541_source_simulator
         open62541::open62541
 )
 
-add_executable(open62541_client_reader
-    open62541_client_reader.c
+add_executable(open62541_client_runner
+    open62541/open62541_client_runner.c
 )
 
-target_link_libraries(open62541_client_reader
+target_link_libraries(open62541_client_runner
     PRIVATE
         open62541::open62541
 )

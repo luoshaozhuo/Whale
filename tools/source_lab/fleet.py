@@ -159,6 +159,7 @@ class SourceSimulatorFleet:
 
     sources: tuple[SimulatedSource, ...]
     update_config: UpdateConfig
+    startup_timeout_seconds: float = 10.0
     join_timeout_seconds: float = 5.0
     _processes: list[multiprocessing.Process] = field(init=False, repr=False, default_factory=list)
     _stop_events: list[synchronize.Event] = field(init=False, repr=False, default_factory=list)
@@ -171,9 +172,11 @@ class SourceSimulatorFleet:
         sources: Sequence[SimulatedSource],
         *,
         update_config: UpdateConfig | None = None,
+        startup_timeout_seconds: float | None = None,
     ) -> "SourceSimulatorFleet":
         """Build one fleet from externally prepared simulated sources."""
         resolved_config = update_config or UpdateConfig()
+        resolved_timeout = startup_timeout_seconds if startup_timeout_seconds is not None else _STARTUP_TIMEOUT_SECONDS
         source_list = tuple(sources)
 
         if not source_list:
@@ -189,6 +192,7 @@ class SourceSimulatorFleet:
         return cls(
             sources=source_list,
             update_config=resolved_config,
+            startup_timeout_seconds=resolved_timeout,
         )
 
     def start(self) -> "SourceSimulatorFleet":
@@ -285,7 +289,7 @@ class SourceSimulatorFleet:
             self._ready_events.append(ready_event)
 
     def _wait_until_ready(self) -> None:
-        timeout_seconds = _resolve_startup_timeout_seconds()
+        timeout_seconds = self.startup_timeout_seconds
         deadline = time.monotonic() + timeout_seconds
         pending_indices = set(range(len(self._ready_events)))
 

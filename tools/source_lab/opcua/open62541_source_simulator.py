@@ -39,7 +39,7 @@ class Open62541SourceSimulatorError(RuntimeError):
 class Open62541SourceSimulator:
     """OPC UA simulator backend implemented by an external open62541 C runner."""
 
-    def __init__(self, source: SimulatedSource) -> None:
+    def __init__(self, source: SimulatedSource, *, startup_timeout_seconds: float = 10.0) -> None:
         normalized_protocol = (
             source.connection.protocol.strip().lower().replace("_", "").replace("-", "")
         )
@@ -48,7 +48,15 @@ class Open62541SourceSimulator:
                 "Open62541SourceSimulator only supports `opcua` sources"
             )
 
+        timeout_from_params = source.connection.params.get("open62541_startup_timeout_seconds")
+        resolved_startup_timeout = startup_timeout_seconds
+        if isinstance(timeout_from_params, (int, float)) and float(timeout_from_params) > 0:
+            resolved_startup_timeout = float(timeout_from_params)
+        if resolved_startup_timeout <= 0:
+            resolved_startup_timeout = _STARTUP_TIMEOUT_SECONDS
+
         self._source = source
+        self._startup_timeout_seconds = resolved_startup_timeout
         self._address_space = build_address_space(source)
         self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._config_path: Path | None = None
@@ -236,7 +244,7 @@ class Open62541SourceSimulator:
 
         host = self._source.connection.host
         port = int(self._source.connection.port)
-        deadline = time.monotonic() + _STARTUP_TIMEOUT_SECONDS
+        deadline = time.monotonic() + self._startup_timeout_seconds
 
         while time.monotonic() < deadline:
             if self._process.poll() is not None:
@@ -327,13 +335,7 @@ def resolve_runner_path() -> Path:
 
     source_lab_root = Path(__file__).resolve().parents[1]
     runner_name = "open62541_source_simulator.exe" if os.name == "nt" else "open62541_source_simulator"
-    return (
-        source_lab_root
-        / "opcua"
-        / "native"
-        / "build"
-        / runner_name
-    )
+    return source_lab_root / "native" / "build" / runner_name
 
 
 def _can_connect(host: str, port: int) -> bool:
@@ -343,12 +345,6 @@ def _can_connect(host: str, port: int) -> bool:
             return True
     except OSError:
         return False
-
-
-def _resolve_internal_update_enabled() -> bool:
-    """Resolve whether the open62541 runner should update values internally."""
-    fallback = os.environ.get("SOURCE_SIM_LOAD_SOURCE_UPDATE_ENABLED", "false")
-    return fallback.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _resolve_internal_update_interval_ms() -> int:

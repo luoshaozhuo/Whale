@@ -32,17 +32,17 @@ cd ~/Whale
 如果使用 `open62541` 后端，必须先编译 C runner：
 
 ```bash
-cmake -S tools/source_lab/opcua/native \
-  -B tools/source_lab/opcua/native/build \
+cmake -S tools/source_lab/native \
+  -B tools/source_lab/native/build \
   -DCMAKE_PREFIX_PATH=$HOME/.local/open62541
 
-cmake --build tools/source_lab/opcua/native/build
+cmake --build tools/source_lab/native/build
 ```
 
 确认 runner 已生成：
 
 ```bash
-ls -lh tools/source_lab/opcua/native/build/open62541_source_simulator
+ls -lh tools/source_lab/native/build/open62541_source_simulator
 ```
 
 ## 3. factory 测试

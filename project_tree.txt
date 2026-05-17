@@ -4169,7 +4169,7 @@
 │       │   │   │   │   ├── Makefile2
 │       │   │   │   │   ├── TargetDirectories.txt
 │       │   │   │   │   ├── cmake.check_cache
-│       │   │   │   │   ├── open62541_client_reader.dir/
+│       │   │   │   │   ├── open62541_client_runner.dir/
 │       │   │   │   │   │   ├── DependInfo.cmake
 │       │   │   │   │   │   ├── build.make
 │       │   │   │   │   │   ├── cmake_clean.cmake
@@ -4179,8 +4179,8 @@
 │       │   │   │   │   │   ├── depend.make
 │       │   │   │   │   │   ├── flags.make
 │       │   │   │   │   │   ├── link.txt
-│       │   │   │   │   │   ├── open62541_client_reader.c.o
-│       │   │   │   │   │   ├── open62541_client_reader.c.o.d
+│       │   │   │   │   │   ├── open62541_client_runner.c.o
+│       │   │   │   │   │   ├── open62541_client_runner.c.o.d
 │       │   │   │   │   │   └── progress.make
 │       │   │   │   │   ├── open62541_source_simulator.dir/
 │       │   │   │   │   │   ├── DependInfo.cmake
@@ -4199,9 +4199,9 @@
 │       │   │   │   │   └── progress.marks
 │       │   │   │   ├── Makefile
 │       │   │   │   ├── cmake_install.cmake
-│       │   │   │   ├── open62541_client_reader
+│       │   │   │   ├── open62541_client_runner
 │       │   │   │   └── open62541_source_simulator
-│       │   │   ├── open62541_client_reader.c
+│       │   │   ├── open62541_client_runner.c
 │       │   │   └── open62541_source_simulator.c
 │       │   ├── open62541_source_simulator.py
 │       │   └── templates/

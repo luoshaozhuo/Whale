@@ -1,5 +1,5 @@
 /*
- * open62541_client_reader.c
+ * open62541_client_runner.c
  * -------------------------
  * 中文说明：
  * 1. 这是一个基于 open62541 的轻量 OPC UA 客户端读取进程。

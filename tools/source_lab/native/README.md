@@ -1,11 +1,11 @@
 # open62541 native tools 源码安装与编译
 
-本目录用于编译 source_lab 的 open62541 native tools，而不是单一 runner。
+本目录用于编译 source_lab 的 open62541 native tools。
 
 包含两个 executable：
 
 - open62541_source_simulator：用于启动 OPC UA source simulator server。
-- open62541_client_reader：用于 high-frequency client read/profile，支持 PREPARE / READ / START_POLL / STOP_POLL 等 stdin 协议。
+- open62541_client_runner：用于 high-frequency client read/profile，支持 PREPARE / READ / START_POLL / STOP_POLL 等 stdin 协议。
 
 ## 1. 下载 open62541 源码
 
@@ -60,19 +60,21 @@ cd ~/Whale
 执行：
 
 ```bash
-cmake -S tools/source_lab/opcua/native \
-  -B tools/source_lab/opcua/native/build \
+cmake -S tools/source_lab/native \
+  -B tools/source_lab/native/build \
   -DCMAKE_PREFIX_PATH=$HOME/.local/open62541
 
-cmake --build tools/source_lab/opcua/native/build
+cmake --build tools/source_lab/native/build
 ```
 
 编译成功后生成：
 
 ```text
-tools/source_lab/opcua/native/build/open62541_source_simulator
-tools/source_lab/opcua/native/build/open62541_client_reader
+tools/source_lab/native/build/open62541_source_simulator
+tools/source_lab/native/build/open62541_client_runner
 ```
+
+说明：`open62541_source_simulator` 与 `open62541_client_runner` 均由当前 CMake 配置直接构建。
 
 ## 4. 运行 smoke 测试
 
@@ -116,8 +118,8 @@ open62541Config.cmake
 重新指定路径：
 
 ```bash
-cmake -S tools/source_lab/opcua/native \
-  -B tools/source_lab/opcua/native/build \
+cmake -S tools/source_lab/native \
+  -B tools/source_lab/native/build \
   -Dopen62541_DIR=$HOME/.local/open62541/lib/cmake/open62541
 ```
 

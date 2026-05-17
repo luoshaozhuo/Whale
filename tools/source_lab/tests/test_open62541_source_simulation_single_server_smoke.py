@@ -32,6 +32,30 @@ from tools.source_lab.model import (
 from tools.source_lab.fleet import SourceSimulatorFleet
 
 
+def _expect_float(value: object) -> float:
+    """Assert test value is float-compatible and return typed float."""
+    assert isinstance(value, (int, float))
+    return float(value)
+
+
+def _expect_int(value: object) -> int:
+    """Assert test value is int-compatible and return typed int."""
+    assert isinstance(value, int)
+    return value
+
+
+def _expect_bool(value: object) -> bool:
+    """Assert test value is bool and return typed bool."""
+    assert isinstance(value, bool)
+    return value
+
+
+def _expect_str(value: object) -> str:
+    """Assert test value is str and return typed str."""
+    assert isinstance(value, str)
+    return value
+
+
 def _choose_available_port(
     *,
     host: str = "127.0.0.1",
@@ -205,10 +229,10 @@ def test_open62541_source_simulation_single_server_smoke(
         data_values = asyncio.run(_read_data_values(source))
 
     assert len(values) == 4
-    assert float(values["WPPD1.TotW"]) == 12.5
-    assert bool(values["WPPD1.DevSt"]) is True
-    assert int(values["WPPD1.OpCnt"]) == 7
-    assert str(values["WPPD1.StrVal"]) == "initial"
+    assert _expect_float(values["WPPD1.TotW"]) == 12.5
+    assert _expect_bool(values["WPPD1.DevSt"]) is True
+    assert _expect_int(values["WPPD1.OpCnt"]) == 7
+    assert _expect_str(values["WPPD1.StrVal"]) == "initial"
 
     _assert_data_value_timestamps(data_values, label="initial")
 
@@ -227,10 +251,10 @@ def test_open62541_source_simulator_writes_smoke(
         initial_values = asyncio.run(_read_points(source))
         initial_data_values = asyncio.run(_read_data_values(source))
 
-        assert float(initial_values["WPPD1.TotW"]) == 12.5
-        assert int(initial_values["WPPD1.OpCnt"]) == 7
-        assert bool(initial_values["WPPD1.DevSt"]) is True
-        assert str(initial_values["WPPD1.StrVal"]) == "initial"
+        assert _expect_float(initial_values["WPPD1.TotW"]) == 12.5
+        assert _expect_int(initial_values["WPPD1.OpCnt"]) == 7
+        assert _expect_bool(initial_values["WPPD1.DevSt"]) is True
+        assert _expect_str(initial_values["WPPD1.StrVal"]) == "initial"
 
         _assert_data_value_timestamps(initial_data_values, label="pre-write")
 
@@ -247,10 +271,10 @@ def test_open62541_source_simulator_writes_smoke(
         updated_values = asyncio.run(_read_points(source))
         post_write_data_values = asyncio.run(_read_data_values(source))
 
-        assert float(updated_values["WPPD1.TotW"]) == 88.5
-        assert int(updated_values["WPPD1.OpCnt"]) == 42
-        assert bool(updated_values["WPPD1.DevSt"]) is False
-        assert str(updated_values["WPPD1.StrVal"]) == "updated"
+        assert _expect_float(updated_values["WPPD1.TotW"]) == 88.5
+        assert _expect_int(updated_values["WPPD1.OpCnt"]) == 42
+        assert _expect_bool(updated_values["WPPD1.DevSt"]) is False
+        assert _expect_str(updated_values["WPPD1.StrVal"]) == "updated"
 
         _assert_data_value_timestamps(post_write_data_values, label="post-write")
 
@@ -259,7 +283,7 @@ def test_open62541_source_simulator_writes_smoke(
         asyncio.run(asyncio.sleep(0.1))
         logical_write_values = asyncio.run(_read_points(source))
 
-        assert float(logical_write_values["WPPD1.TotW"]) == 99.5
+        assert _expect_float(logical_write_values["WPPD1.TotW"]) == 99.5
 
 
 @pytest.mark.load
